@@ -270,22 +270,53 @@ export async function startCommand(): Promise<void> {
     }
     try {
       lastObservation = event.data;
-      logger.logAnalyzing(event.data.transcript);
-
       const transcript = event.data.transcript ?? 'click';
+
+      // Detect revert/undo commands — handle directly via git
+      if (/\b(revert|верни|откати|undo|отмени последн|верни назад|откатить)\b/i.test(transcript)) {
+        console.log(chalk.cyan('[Nova] Detected revert request — using git revert'));
+        wsServer.sendEvent({ type: 'status', data: { message: 'Reverting last commit...' } } as NovaEvent);
+        try {
+          const log = await gitManager.getLog();
+          if (log.length > 0) {
+            const lastCommit = log[0];
+            console.log(chalk.cyan(`[Nova] Reverting commit: ${lastCommit.hash} — ${lastCommit.message}`));
+            await gitManager.rollback(lastCommit.hash);
+            console.log(chalk.green(`[Nova] Reverted successfully!`));
+            wsServer.sendEvent({ type: 'status', data: { message: `Reverted: ${lastCommit.message.slice(0, 80)}` } } as NovaEvent);
+            // Reload overlay
+            setTimeout(() => {
+              wsServer.sendEvent({ type: 'status', data: { message: 'autofix_end' } } as NovaEvent);
+            }, 1500);
+          } else {
+            console.log(chalk.yellow('[Nova] No commits to revert'));
+            wsServer.sendEvent({ type: 'status', data: { message: 'No commits to revert.' } } as NovaEvent);
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.log(chalk.red(`[Nova] Revert failed: ${msg}`));
+          wsServer.sendEvent({ type: 'status', data: { message: `Revert failed: ${msg}` } } as NovaEvent);
+        }
+        return;
+      }
+
+      logger.logAnalyzing(transcript);
       wsServer.sendEvent({ type: 'status', data: { message: `🧠 AI is thinking about: "${transcript.slice(0, 80)}"...` } } as NovaEvent);
 
       const analyzeSpinner = ora({ text: chalk.yellow('AI is thinking...'), spinner: 'dots' }).start();
 
       const tasks = await brain.analyze(event.data, projectMap);
       analyzeSpinner.succeed(chalk.green(`AI produced ${tasks.length} task(s)`));
-      wsServer.sendEvent({ type: 'status', data: { message: `AI produced ${tasks.length} task(s)` } } as NovaEvent);
       logger.logTasks(tasks);
 
       if (tasks.length === 0) {
-        wsServer.sendEvent({ type: 'status', data: { message: 'No tasks generated.' } } as NovaEvent);
+        // Brain may have asked a clarifying question (sent via status "question:..." event)
+        // Don't overwrite it with "No tasks generated"
+        console.log(chalk.dim('[Nova] No tasks produced — AI may have asked a question'));
         return;
       }
+
+      wsServer.sendEvent({ type: 'status', data: { message: `AI produced ${tasks.length} task(s)` } } as NovaEvent);
 
       // Auto-execute mode (from Quick Edit / Multi-Edit) — skip confirmation
       if (nextAutoExecute) {

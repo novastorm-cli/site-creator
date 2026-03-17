@@ -110,6 +110,9 @@ function boot(): void {
   elementInspector.mount(novaRoot);
   multiSelector.mount(novaRoot);
 
+  // Restore inspector popup state after hot reload
+  setTimeout(() => elementInspector.restorePopupState(), 300);
+
   // Element inspector: send directly, auto-execute (no confirmation needed)
   elementInspector.onSubmit((element, instruction) => {
     selectedElement = element;
@@ -358,8 +361,8 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
         wsClient.send(observation);
       }
       autoExecute = false; // Reset after sending
-      statusToast.show('Command sent to Nova', 'info');
-      pill.setState('listening');
+      pill.setState('processing');
+      executingToastId = statusToast.show('🧠 AI is thinking... please wait', 'info', 0);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('[Nova] Failed to send observation:', message);
@@ -540,10 +543,12 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
         }
         break;
       case 'task_created': {
+        // Dismiss thinking toast
+        if (executingToastId) { statusToast.dismiss(executingToastId); executingToastId = null; }
         const td = event.data as { id?: string; description?: string; lane?: number };
         if (td.id && td.description) {
           taskPanel.addTask({ id: td.id, description: td.description, lane: td.lane ?? 3 });
-          totalTasks = Math.max(totalTasks, 1); // Ensure totalTasks tracks
+          totalTasks = Math.max(totalTasks, 1);
         }
         activityLog.addEntry(`Task: ${td.description} (Lane ${td.lane})`, 'info');
         break;
@@ -552,7 +557,45 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
         const msg = event.data.message;
         activityLog.addEntry(msg, 'info');
         // Show confirmation toast with buttons for pending tasks
-        if (msg.startsWith('Pending:')) {
+        if (msg.startsWith('question:')) {
+          // AI is asking a clarifying question — show it with input for answer
+          if (executingToastId) { statusToast.dismiss(executingToastId); executingToastId = null; }
+          pill.setState('idle');
+          const question = msg.slice('question:'.length).trim();
+          activityLog.addEntry(`🤔 AI asks: ${question}`, 'thinking');
+
+          // Show question in transcript bar confirmation area
+          transcriptBar.showConfirmation(`🤔 ${question}`);
+
+          // Override confirm handlers for this question
+          awaitingSendConfirmation = true;
+          pendingVoiceCommand = ''; // Will be filled by user's answer
+
+          // The user will type answer in transcript bar input and press Enter/Execute
+          // When confirmed, the answer will be sent as a new observation with the question context
+          const origExecHandlers = [...(transcriptBar as any).confirmExecuteHandlers];
+          const origCancelHandlers = [...(transcriptBar as any).confirmCancelHandlers];
+
+          (transcriptBar as any).confirmExecuteHandlers = [() => {
+            const answer = (transcriptBar as any).inputEl?.value?.trim() ?? '';
+            awaitingSendConfirmation = false;
+            transcriptBar.hideConfirmation();
+            (transcriptBar as any).confirmExecuteHandlers = origExecHandlers;
+            (transcriptBar as any).confirmCancelHandlers = origCancelHandlers;
+            if (answer) {
+              void sendObservation(`Answer to question "${question}": ${answer}`);
+            }
+          }];
+          (transcriptBar as any).confirmCancelHandlers = [() => {
+            awaitingSendConfirmation = false;
+            transcriptBar.hideConfirmation();
+            (transcriptBar as any).confirmExecuteHandlers = origExecHandlers;
+            (transcriptBar as any).confirmCancelHandlers = origCancelHandlers;
+            statusToast.show('Question dismissed.', 'info', 2000);
+          }];
+        } else if (msg.startsWith('Pending:')) {
+          // Dismiss "AI is thinking" toast
+          if (executingToastId) { statusToast.dismiss(executingToastId); executingToastId = null; }
           awaitingConfirmation = true;
           pill.setState('idle');
 

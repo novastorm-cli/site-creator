@@ -55,36 +55,22 @@ function buildPrompt(task: TaskItem, projectMap: ProjectMap, existingFiles: Set<
     parts.push(`Target files: ${task.files.join(', ')}`);
   }
 
-  // Show full file tree so AI knows the structure
   const allFiles = Array.from(projectMap.fileContexts.keys()).sort();
-  parts.push(`\nExisting files in project:\n${allFiles.map(f => `  ${f}`).join('\n')}`);
+  parts.push(`\nExisting files: ${allFiles.join(', ')}`);
 
-  parts.push(`\nProject context:\n${projectMap.compressedContext}`);
-
-  // Include key file contents — main page, layout, and any task-relevant files
+  // Only include task-relevant files (keep prompt small for speed)
   const keyFiles = new Set<string>();
 
-  // Always include main entry point
-  for (const f of allFiles) {
-    if (f.match(/^app\/page\.(tsx|jsx|ts|js)$/) || f.match(/^pages\/index\.(tsx|jsx|ts|js)$/)) {
-      keyFiles.add(f);
-    }
-    if (f.match(/^app\/layout\.(tsx|jsx|ts|js)$/)) {
-      keyFiles.add(f);
-    }
-    if (f.match(/globals\.css$/)) {
-      keyFiles.add(f);
-    }
-  }
-
-  // Add task-specified files
+  // Task-specified files first
   for (const f of task.files) {
     keyFiles.add(f);
   }
 
-  // Add a few more relevant files
-  for (const f of allFiles.slice(0, 3)) {
-    keyFiles.add(f);
+  // If no specific files, include main page only
+  if (keyFiles.size === 0) {
+    for (const f of allFiles) {
+      if (f.match(/^app\/page\.(tsx|jsx|ts|js)$/)) keyFiles.add(f);
+    }
   }
 
   for (const filePath of keyFiles) {
@@ -99,10 +85,14 @@ function buildPrompt(task: TaskItem, projectMap: ProjectMap, existingFiles: Set<
     }
   }
 
-  // Include package.json deps so AI knows what's available
+  // Just list dependency names (not full package.json)
   const pkgCtx = projectMap.fileContexts.get('package.json');
   if (pkgCtx) {
-    parts.push(`\npackage.json (available dependencies):\n\`\`\`\n${pkgCtx.content}\n\`\`\``);
+    try {
+      const pkg = JSON.parse(pkgCtx.content);
+      const deps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies }).join(', ');
+      parts.push(`\nAvailable packages: ${deps}`);
+    } catch { /* skip */ }
   }
 
   return parts.join('\n');
@@ -211,13 +201,18 @@ export class Lane3Executor {
       // Apply blocks: write full files or apply diffs
       const fileBlocks = await this.applyMixedBlocks(mixedBlocks);
 
-      // TESTER/DIRECTOR loop
+      // TESTER/DIRECTOR loop (skip for single-file small changes to save time)
+      const skipValidation = fileBlocks.length === 1 && fileBlocks[0].content.length < 3000;
       const validator = new CodeValidator(this.projectPath);
       const fixer = new CodeFixer(this.llmClient, this.eventBus);
       let currentBlocks: FileBlock[] = [...fileBlocks];
       let errors: ValidationError[] = [];
 
-      for (let iteration = 1; iteration <= this.maxFixIterations; iteration++) {
+      if (skipValidation) {
+        console.log(`[Nova] Tester: skipping validation (small single-file change)`);
+      }
+
+      for (let iteration = 1; !skipValidation && iteration <= this.maxFixIterations; iteration++) {
         // TESTER phase
         console.log(`[Nova] Tester: validating (iteration ${iteration}/${this.maxFixIterations})...`);
         this.eventBus?.emit({ type: 'status', data: { message: `Validating code (${iteration}/${this.maxFixIterations})...` } });
@@ -288,6 +283,54 @@ export class Lane3Executor {
   }
 
   /**
+   * Fuzzy diff apply — find removed lines in the file and replace with added lines.
+   * Ignores context lines (doesn't require exact line numbers).
+   */
+  private fuzzyApplyDiff(content: string, diff: string): string {
+    const lines = content.split('\n');
+    const diffLines = diff.split('\n');
+
+    // Extract hunks: removed lines (- prefix) and added lines (+ prefix)
+    const removals: string[] = [];
+    const additions: string[] = [];
+
+    for (const dl of diffLines) {
+      if (dl.startsWith('-') && !dl.startsWith('---')) {
+        removals.push(dl.slice(1)); // Remove the - prefix
+      } else if (dl.startsWith('+') && !dl.startsWith('+++')) {
+        additions.push(dl.slice(1)); // Remove the + prefix
+      }
+    }
+
+    if (removals.length === 0 && additions.length === 0) return content;
+
+    // Find the first removal line in the file
+    let result = content;
+    if (removals.length > 0) {
+      const firstRemoval = removals[0].trim();
+      const idx = lines.findIndex(l => l.trim() === firstRemoval);
+
+      if (idx !== -1) {
+        // Remove all matched lines and insert additions at that position
+        const newLines = [...lines];
+        let removeCount = 0;
+        for (let i = 0; i < removals.length && (idx + removeCount) < newLines.length; i++) {
+          if (newLines[idx + removeCount].trim() === removals[i].trim()) {
+            removeCount++;
+          }
+        }
+        newLines.splice(idx, removeCount, ...additions);
+        result = newLines.join('\n');
+      }
+    } else if (additions.length > 0) {
+      // Only additions — append at end
+      result = content + '\n' + additions.join('\n');
+    }
+
+    return result;
+  }
+
+  /**
    * Apply mixed blocks: write full files or apply diffs.
    * Returns normalized FileBlock[] (all with full content) for validation.
    */
@@ -309,25 +352,20 @@ export class Lane3Executor {
           const updatedContent = await readFile(absPath, 'utf-8');
           result.push({ path: block.path, content: updatedContent });
         } catch (err) {
-          // Diff application failed — retry by asking LLM for full file content
+          // Diff failed — try fuzzy apply (ignore context lines, just apply +/- changes)
           console.log(`[Nova] Warning: diff apply failed for ${block.path}`);
           console.log(`[Nova]   Reason: ${err instanceof Error ? err.message : String(err)}`);
-          console.log(`[Nova]   Retrying with full file generation...`);
+          console.log(`[Nova]   Trying fuzzy apply...`);
 
           try {
             const existingContent = await readFile(absPath, 'utf-8');
-            const retryPrompt = `The file ${block.path} needs to be modified. Here is the CURRENT content:\n\n${existingContent}\n\nApply this change: ${block.diff}\n\nOutput the COMPLETE modified file content inside:\n=== FILE: ${block.path} ===\n(full content)\n=== END FILE ===`;
-            const retryResponse = await this.llmClient.chat(
-              [{ role: 'user', content: retryPrompt }],
-              { temperature: 0 },
-            );
-            const retryBlocks = parseFileBlocks(retryResponse);
-            if (retryBlocks.length > 0) {
-              await writeFile(absPath, retryBlocks[0].content, 'utf-8');
-              result.push({ path: block.path, content: retryBlocks[0].content });
-              console.log(`[Nova]   Retry succeeded for ${block.path}`);
+            const patched = this.fuzzyApplyDiff(existingContent, block.diff);
+            if (patched !== existingContent) {
+              await writeFile(absPath, patched, 'utf-8');
+              result.push({ path: block.path, content: patched });
+              console.log(`[Nova]   Fuzzy apply succeeded for ${block.path}`);
             } else {
-              console.log(`[Nova]   Retry also failed, keeping existing file`);
+              console.log(`[Nova]   Fuzzy apply made no changes, keeping file`);
               result.push({ path: block.path, content: existingContent });
             }
           } catch {

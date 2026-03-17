@@ -26,7 +26,14 @@ export class GitManager implements IGitManager {
 
   async commit(message: string, files: string[]): Promise<string> {
     if (files.length > 0) {
-      await this.run('git', ['add', ...files]);
+      // Add files one by one — skip gitignored files
+      for (const file of files) {
+        try {
+          await this.run('git', ['add', file]);
+        } catch {
+          // File may be in .gitignore — skip silently
+        }
+      }
     } else {
       await this.run('git', ['add', '-A']);
     }

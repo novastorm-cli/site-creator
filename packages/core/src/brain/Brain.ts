@@ -11,6 +11,7 @@ interface RawTask {
   description?: string;
   files?: string[];
   type?: string;
+  question?: string;
 }
 
 const VALID_TYPES: ReadonlySet<string> = new Set(['css', 'single_file', 'multi_file', 'refactor']);
@@ -97,37 +98,56 @@ export class Brain implements IBrain {
   private parseJsonArray(response: string): RawTask[] {
     let trimmed = response.trim();
 
-    // Try to extract JSON array from response if it contains non-JSON text
-    if (!trimmed.startsWith('[')) {
-      // Look for JSON array in the response
-      const jsonMatch = trimmed.match(/\[[\s\S]*\]/);
-      if (jsonMatch) {
-        trimmed = jsonMatch[0];
-      }
-    }
-
     // Strip markdown code fences if present
-    if (trimmed.startsWith('```')) {
+    if (trimmed.includes('```')) {
       const fenceMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
       if (fenceMatch) {
         trimmed = fenceMatch[1].trim();
       }
     }
 
-    const parsed: unknown = JSON.parse(trimmed);
+    // Try direct parse first
+    try {
+      const direct = JSON.parse(trimmed);
+      if (Array.isArray(direct)) return direct as RawTask[];
+    } catch { /* try extraction */ }
 
-    if (!Array.isArray(parsed)) {
-      throw new Error('LLM response is not a JSON array');
+    // Find all JSON arrays in the response and use the last valid one
+    // (Claude CLI sometimes outputs multiple: first attempt + "let me reconsider" + second attempt)
+    const jsonCandidates: string[] = [];
+    const bracketRegex = /\[[\s\S]*?\]/g;
+    let match;
+    while ((match = bracketRegex.exec(trimmed)) !== null) {
+      jsonCandidates.push(match[0]);
     }
 
-    return parsed as RawTask[];
+    // Try candidates from last to first (last is usually the final answer)
+    for (let i = jsonCandidates.length - 1; i >= 0; i--) {
+      try {
+        const parsed = JSON.parse(jsonCandidates[i]);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed as RawTask[];
+        }
+      } catch { /* try next */ }
+    }
+
+    throw new Error('No valid JSON array found in response');
   }
 
   private toTaskItems(raw: RawTask[]): TaskItem[] {
+    // Check if AI is asking a clarifying question
+    if (raw.length === 1 && raw[0].question && !raw[0].description) {
+      console.log(`[Nova] Brain: AI asks clarifying question: ${raw[0].question}`);
+      this.status(`question:${raw[0].question}`);
+      return []; // No tasks — question sent via status event
+    }
+
     const BINARY_PATTERN = /\b(image|photo|picture|icon|svg|png|jpg|jpeg|gif|webp|favicon|font|woff|video|mp4|audio|mp3)\b/i;
 
     return raw
       .map((item) => {
+        // Skip question items mixed with tasks
+        if (item.question && !item.description) return null;
         const description = item.description ?? '';
         const files = Array.isArray(item.files) ? item.files : [];
         const type: TaskType = (typeof item.type === 'string' && isValidTaskType(item.type))
@@ -145,6 +165,7 @@ export class Brain implements IBrain {
           status: 'pending' as const,
         };
       })
+      .filter((task): task is NonNullable<typeof task> => task !== null)
       .filter((task) => {
         // Filter out tasks that try to create/add binary files
         const hasBinaryFiles = task.files.some((f) =>

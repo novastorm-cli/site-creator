@@ -179,6 +179,7 @@ export class ElementInspector {
     this.popupVisible = false;
     this.selectedElement = null;
     document.body.style.cursor = '';
+    try { sessionStorage.removeItem('nova-inspector-popup'); } catch {}
 
     if (this.popupRecognition) {
       this.popupRecognition.stop();
@@ -241,6 +242,56 @@ export class ElementInspector {
     return `${tag}${id}${classes}`;
   }
 
+  private getUniqueSelector(el: HTMLElement): string {
+    if (el.id) return `#${el.id}`;
+    const tag = el.tagName.toLowerCase();
+    const cls = el.className && typeof el.className === 'string'
+      ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.')
+      : '';
+    // Add nth-child for uniqueness
+    const parent = el.parentElement;
+    if (parent) {
+      const siblings = Array.from(parent.children).filter(c => c.tagName === el.tagName);
+      if (siblings.length > 1) {
+        const idx = siblings.indexOf(el) + 1;
+        return `${tag}${cls}:nth-of-type(${idx})`;
+      }
+    }
+    return `${tag}${cls}`;
+  }
+
+  private savePopupState(element: HTMLElement, inputText: string, x: number, y: number): void {
+    try {
+      sessionStorage.setItem('nova-inspector-popup', JSON.stringify({
+        selector: this.getUniqueSelector(element),
+        text: inputText,
+        x, y,
+      }));
+    } catch {}
+  }
+
+  restorePopupState(): void {
+    try {
+      const raw = sessionStorage.getItem('nova-inspector-popup');
+      if (!raw) return;
+      sessionStorage.removeItem('nova-inspector-popup');
+      const state = JSON.parse(raw);
+      if (!state.selector) return;
+
+      // Try to find the element
+      const el = document.querySelector(state.selector) as HTMLElement | null;
+      if (el) {
+        this.selectedElement = el;
+        this.showPopup(state.x ?? 200, state.y ?? 200, el);
+        // Restore input text after popup is rendered
+        setTimeout(() => {
+          const input = this.popupEl?.querySelector('.popup-input') as HTMLInputElement | null;
+          if (input && state.text) input.value = state.text;
+        }, 50);
+      }
+    } catch {}
+  }
+
   private showPopup(x: number, y: number, element: HTMLElement): void {
     if (!this.popupEl) return;
 
@@ -285,6 +336,11 @@ export class ElementInspector {
     input.className = 'popup-input';
     input.type = 'text';
     input.placeholder = 'e.g. "change color to red", "make it bigger"...';
+    input.addEventListener('input', () => {
+      if (this.selectedElement) {
+        this.savePopupState(this.selectedElement, input.value, x, y);
+      }
+    });
     inputRow.appendChild(input);
 
     const micBtn = document.createElement('button');
