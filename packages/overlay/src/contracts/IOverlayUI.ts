@@ -5,12 +5,14 @@ export interface IOverlayPill {
    *
    * States: idle (gray), listening (green pulse), processing (blue spin), error (red)
    * Draggable — remembers position in localStorage.
-   * Click → calls onActivate callback.
+   * Click → opens dropdown menu with Quick Edit and Multi-Edit options.
    */
   mount(container: HTMLElement): void;
   unmount(): void;
   setState(state: 'idle' | 'listening' | 'processing' | 'error'): void;
-  onActivate(handler: () => void): void;
+  onQuickEdit(handler: () => void): void;
+  onMultiEdit(handler: () => void): void;
+  setActiveMode(mode: 'none' | 'quickEdit' | 'multiEdit'): void;
 }
 
 export interface ICommandInput {
@@ -61,6 +63,21 @@ export interface IStatusToast {
   dismiss(id: string): void;
   dismissAll(): void;
   onClick(handler: (id: string) => void): void;
+}
+
+export interface IMultiElementSelector {
+  /**
+   * Multi-element selection tool.
+   * Option+K (Mac) / Alt+K (Win) toggles mode.
+   * Click elements to mark them with numbers, then type a command referencing the numbers.
+   * Execute submits all marked elements + instruction to handlers.
+   */
+  mount(container: HTMLElement): void;
+  unmount(): void;
+  toggle(): void;
+  isActive(): boolean;
+  deactivate(): void;
+  onSubmit(handler: (elements: Array<{number: number; element: HTMLElement}>, instruction: string) => void): void;
 }
 
 export interface ITranscriptBar {

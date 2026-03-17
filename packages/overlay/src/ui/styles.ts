@@ -41,6 +41,7 @@ export const Z_INDEX = {
   taskPanel: 2147483638,
   pill: 2147483640,
   commandInput: 2147483641,
+  multiSelector: 2147483641,
   toast: 2147483645,
 } as const;
 

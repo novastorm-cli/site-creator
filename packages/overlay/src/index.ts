@@ -17,6 +17,7 @@ import { TranscriptBar } from './ui/TranscriptBar.js';
 import { TaskPanel } from './ui/TaskPanel.js';
 import { ActivityLog } from './ui/ActivityLog.js';
 import { ElementInspector } from './ui/ElementInspector.js';
+import { MultiElementSelector } from './ui/MultiElementSelector.js';
 import { WebSocketClient } from './transport/WebSocketClient.js';
 import type { BrowserObservation } from './transport/WebSocketClient.js';
 
@@ -61,6 +62,7 @@ function boot(): void {
   const taskPanel = new TaskPanel();
   const activityLog = new ActivityLog();
   const elementInspector = new ElementInspector();
+  const multiSelector = new MultiElementSelector();
 
   // Transport
   const wsClient = new WebSocketClient();
@@ -105,12 +107,44 @@ function boot(): void {
   taskPanel.mount(novaRoot);
   activityLog.mount(novaRoot);
   elementInspector.mount(novaRoot);
+  multiSelector.mount(novaRoot);
 
   // Element inspector: capture DOM snapshot + instruction and send directly (no double confirmation)
   elementInspector.onSubmit((element, instruction) => {
     selectedElement = element;
     void sendObservation(instruction);
   });
+
+  // Multi-element selector: build combined DOM snapshot from all marked elements
+  multiSelector.onSubmit((elements, instruction) => {
+    const snapshots = elements.map(({ number, element }) => {
+      const snapshot = domCapture.captureElement(element);
+      return `[Element ${number}]: ${snapshot}`;
+    });
+    const combinedInstruction = `${instruction}\n\nMarked elements:\n${snapshots.join('\n\n')}`;
+    void sendObservation(combinedInstruction);
+  });
+
+  // Rage click detection: 3+ clicks within 1.5s on same element → open inspector popup
+  let rageClicks: Array<{ target: EventTarget | null; time: number }> = [];
+  document.addEventListener('click', (e) => {
+    // Skip clicks on Nova UI elements
+    const target = e.target as HTMLElement;
+    if (target.closest('#nova-root') || target.closest('[data-nova-pill]') || target.closest('[data-nova-transcript]')) return;
+
+    const now = Date.now();
+    rageClicks.push({ target: e.target, time: now });
+    // Keep only recent clicks
+    rageClicks = rageClicks.filter(c => now - c.time < 1500);
+
+    // Check for 3+ clicks on the same element
+    const sameTarget = rageClicks.filter(c => c.target === e.target);
+    if (sameTarget.length >= 3) {
+      rageClicks = [];
+      // Activate inspector and auto-select this element
+      elementInspector.showPopupForElement(target, e.clientX, e.clientY);
+    }
+  }, true);
 
   // Watch for removal and re-mount if React or error boundaries nuke the elements
   const overlaySelectors = [
@@ -119,6 +153,7 @@ function boot(): void {
     { attr: 'data-nova-task-panel', remount: () => { taskPanel.unmount(); taskPanel.mount(novaRoot!); } },
     { attr: 'data-nova-activity-log', remount: () => { activityLog.unmount(); activityLog.mount(novaRoot!); } },
     { attr: 'data-nova-inspector', remount: () => { elementInspector.unmount(); elementInspector.mount(novaRoot!); } },
+    { attr: 'data-nova-multi-selector', remount: () => { multiSelector.unmount(); multiSelector.mount(novaRoot!); } },
   ];
 
   const overlayObserver = new MutationObserver(() => {
@@ -344,12 +379,49 @@ function boot(): void {
     }
   });
 
-  // Pill click -> start voice on first click, then toggle element selector
-  pill.onActivate(() => {
-    // Toggle element inspector mode
+  // Pill dropdown: Quick Edit
+  pill.onQuickEdit(() => {
+    multiSelector.deactivate();
     elementInspector.toggle();
+    pill.setActiveMode(elementInspector.isActive() ? 'quickEdit' : 'none');
     if (elementInspector.isActive()) {
-      statusToast.show('Inspector mode ON — click any element (Option+I to cancel)', 'info', 3000);
+      statusToast.show('Quick Edit mode — click any element (Option+I)', 'info', 2000);
+    }
+  });
+
+  // Pill dropdown: Multi-Edit
+  pill.onMultiEdit(() => {
+    elementInspector.deactivate();
+    multiSelector.toggle();
+    pill.setActiveMode(multiSelector.isActive() ? 'multiEdit' : 'none');
+    if (multiSelector.isActive()) {
+      statusToast.show('Multi-Edit mode — click elements to mark them (Option+K)', 'info', 2000);
+    }
+  });
+
+  // Keyboard mutual exclusion for inspector modes
+  document.addEventListener('keydown', (e) => {
+    if (e.altKey && e.code === 'KeyI') {
+      // Quick Edit toggled via keyboard — sync state
+      setTimeout(() => {
+        if (elementInspector.isActive()) {
+          multiSelector.deactivate();
+          pill.setActiveMode('quickEdit');
+        } else {
+          pill.setActiveMode('none');
+        }
+      }, 10);
+    }
+    if (e.altKey && e.code === 'KeyK') {
+      // Multi-Edit toggled via keyboard — sync state
+      setTimeout(() => {
+        if (multiSelector.isActive()) {
+          elementInspector.deactivate();
+          pill.setActiveMode('multiEdit');
+        } else {
+          pill.setActiveMode('none');
+        }
+      }, 10);
     }
   });
 

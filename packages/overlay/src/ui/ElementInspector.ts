@@ -132,6 +132,12 @@ export class ElementInspector {
     }
   }
 
+  /** Show popup directly for a specific element (used by rage click). */
+  showPopupForElement(element: HTMLElement, x: number, y: number): void {
+    this.selectedElement = element;
+    this.showPopup(x, y, element);
+  }
+
   /** Toggle inspector mode on/off. Can be called from external UI. */
   toggle(): void {
     if (this.popupVisible) return;
@@ -151,7 +157,7 @@ export class ElementInspector {
     document.body.style.cursor = 'crosshair';
   }
 
-  private deactivate(): void {
+  deactivate(): void {
     this.active = false;
     this.popupVisible = false;
     this.selectedElement = null;

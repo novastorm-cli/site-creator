@@ -10,11 +10,11 @@ CLI Target: es2022
 CLI Cleaning output folder
 ESM Build start
 ESM dist/bin/nova.js       181.00 B
-ESM dist/index.js          289.00 B
 ESM dist/chunk-UMLZPEG7.js 5.99 KB
 ESM dist/setup-P6KNCCB4.js 73.00 B
 ESM dist/chunk-AUVQHYJD.js 32.96 KB
-ESM ⚡️ Build success in 12ms
+ESM dist/index.js          289.00 B
+ESM ⚡️ Build success in 15ms
 DTS Build start
-DTS ⚡️ Build success in 876ms
+DTS ⚡️ Build success in 946ms
 DTS dist/index.d.ts 2.20 KB

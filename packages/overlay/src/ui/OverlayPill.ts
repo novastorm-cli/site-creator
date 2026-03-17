@@ -10,7 +10,11 @@ export class OverlayPill implements IOverlayPill {
   private host: HTMLElement | null = null;
   private shadow: ShadowRoot | null = null;
   private pillEl: HTMLElement | null = null;
-  private activateHandler: (() => void) | null = null;
+  private dropdownEl: HTMLElement | null = null;
+  private dropdownVisible = false;
+  private quickEditHandler: (() => void) | null = null;
+  private multiEditHandler: (() => void) | null = null;
+  private activeMode: 'none' | 'quickEdit' | 'multiEdit' = 'none';
   private currentState: PillState = 'idle';
 
   private isDragging = false;
@@ -20,6 +24,7 @@ export class OverlayPill implements IOverlayPill {
 
   private readonly boundMouseMove = this.handleMouseMove.bind(this);
   private readonly boundMouseUp = this.handleMouseUp.bind(this);
+  private readonly boundDocumentClick = this.handleDocumentClick.bind(this);
 
   mount(container: HTMLElement): void {
     if (this.host) return;
@@ -39,6 +44,21 @@ export class OverlayPill implements IOverlayPill {
 
     this.shadow.appendChild(this.pillEl);
 
+    this.dropdownEl = document.createElement('div');
+    this.dropdownEl.className = 'pill-dropdown hidden';
+    this.dropdownEl.innerHTML = `
+      <button class="dropdown-item" data-mode="quickEdit">
+        <span class="dropdown-icon">&#127919;</span> Quick Edit <span class="shortcut">&#x2325;I</span>
+      </button>
+      <button class="dropdown-item" data-mode="multiEdit">
+        <span class="dropdown-icon">&#128204;</span> Multi-Edit <span class="shortcut">&#x2325;K</span>
+      </button>
+    `;
+    this.dropdownEl.addEventListener('click', this.handleDropdownClick.bind(this));
+    this.shadow.appendChild(this.dropdownEl);
+
+    document.addEventListener('click', this.boundDocumentClick, true);
+
     // Always position at bottom-right of viewport
     this.host.style.position = 'fixed';
     this.host.style.right = '20px';
@@ -57,10 +77,12 @@ export class OverlayPill implements IOverlayPill {
   unmount(): void {
     document.removeEventListener('mousemove', this.boundMouseMove);
     document.removeEventListener('mouseup', this.boundMouseUp);
+    document.removeEventListener('click', this.boundDocumentClick, true);
     this.host?.remove();
     this.host = null;
     this.shadow = null;
     this.pillEl = null;
+    this.dropdownEl = null;
   }
 
   setState(state: PillState): void {
@@ -70,8 +92,26 @@ export class OverlayPill implements IOverlayPill {
     this.host?.setAttribute('data-state', state);
   }
 
-  onActivate(handler: () => void): void {
-    this.activateHandler = handler;
+  onQuickEdit(handler: () => void): void {
+    this.quickEditHandler = handler;
+  }
+
+  onMultiEdit(handler: () => void): void {
+    this.multiEditHandler = handler;
+  }
+
+  setActiveMode(mode: 'none' | 'quickEdit' | 'multiEdit'): void {
+    this.activeMode = mode;
+    if (!this.dropdownEl) return;
+    const items = this.dropdownEl.querySelectorAll('.dropdown-item');
+    items.forEach((item) => {
+      const el = item as HTMLElement;
+      if (el.dataset.mode === mode) {
+        el.classList.add('active');
+      } else {
+        el.classList.remove('active');
+      }
+    });
   }
 
   private handleClick(e: MouseEvent): void {
@@ -79,7 +119,43 @@ export class OverlayPill implements IOverlayPill {
       e.preventDefault();
       return;
     }
-    this.activateHandler?.();
+    this.toggleDropdown();
+  }
+
+  private toggleDropdown(): void {
+    this.dropdownVisible = !this.dropdownVisible;
+    if (!this.dropdownEl) return;
+    if (this.dropdownVisible) {
+      this.dropdownEl.classList.remove('hidden');
+    } else {
+      this.dropdownEl.classList.add('hidden');
+    }
+  }
+
+  private closeDropdown(): void {
+    this.dropdownVisible = false;
+    this.dropdownEl?.classList.add('hidden');
+  }
+
+  private handleDropdownClick(e: MouseEvent): void {
+    const target = (e.target as HTMLElement).closest('.dropdown-item') as HTMLElement | null;
+    if (!target) return;
+    e.stopPropagation();
+    const mode = target.dataset.mode;
+    if (mode === 'quickEdit') {
+      this.quickEditHandler?.();
+    } else if (mode === 'multiEdit') {
+      this.multiEditHandler?.();
+    }
+    this.closeDropdown();
+  }
+
+  private handleDocumentClick(e: MouseEvent): void {
+    if (!this.dropdownVisible || !this.host) return;
+    const path = e.composedPath();
+    if (!path.includes(this.host)) {
+      this.closeDropdown();
+    }
   }
 
   private handleMouseDown(e: MouseEvent): void {
@@ -171,6 +247,37 @@ export class OverlayPill implements IOverlayPill {
         0% { transform: rotate(0deg); }
         100% { transform: rotate(360deg); }
       }
+      .pill-dropdown {
+        position: absolute;
+        bottom: calc(100% + 8px);
+        right: 0;
+        background: #1a1a1aee;
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.1);
+        box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        overflow: hidden;
+        min-width: 180px;
+        pointer-events: auto;
+      }
+      .pill-dropdown.hidden { display: none; }
+      .dropdown-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        width: 100%;
+        border: none;
+        background: transparent;
+        color: #e5e7eb;
+        font-size: 13px;
+        cursor: pointer;
+        text-align: left;
+        border-left: 3px solid transparent;
+        transition: all 0.15s;
+      }
+      .dropdown-item:hover { background: rgba(255,255,255,0.08); }
+      .dropdown-item.active { border-left-color: #3b82f6; background: rgba(59,130,246,0.1); }
+      .shortcut { margin-left: auto; color: #6b7280; font-size: 11px; }
     `;
   }
 }
