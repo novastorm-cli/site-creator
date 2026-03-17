@@ -4,7 +4,7 @@ import type { IWebSocketServer, Observation, NovaEvent } from '@nova-architect/c
 
 export class WebSocketServer implements IWebSocketServer {
   private wss: WsServer | null = null;
-  private observationHandlers: Array<(observation: Observation) => void> = [];
+  private observationHandlers: Array<(observation: Observation, autoExecute?: boolean) => void> = [];
   private confirmHandlers: Array<() => void> = [];
   private cancelHandlers: Array<() => void> = [];
   private appendHandlers: Array<(text: string) => void> = [];
@@ -66,8 +66,10 @@ export class WebSocketServer implements IWebSocketServer {
             timestamp: obsData.timestamp ?? Date.now(),
           };
 
+          const autoExecute = obsData.autoExecute === true;
+
           for (const handler of this.observationHandlers) {
-            handler(observation);
+            handler(observation, autoExecute);
           }
         } catch {
           // Ignore malformed messages
@@ -76,7 +78,7 @@ export class WebSocketServer implements IWebSocketServer {
     });
   }
 
-  onObservation(handler: (observation: Observation) => void): void {
+  onObservation(handler: (observation: Observation, autoExecute?: boolean) => void): void {
     this.observationHandlers.push(handler);
   }
 

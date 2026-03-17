@@ -254,7 +254,9 @@ export async function startCommand(): Promise<void> {
   });
 
   // Wire WebSocket observations into EventBus
-  wsServer.onObservation((observation: Observation) => {
+  let nextAutoExecute = false;
+  wsServer.onObservation((observation: Observation, autoExecute?: boolean) => {
+    nextAutoExecute = autoExecute === true;
     logger.logObservation(observation);
     eventBus.emit({ type: 'observation', data: observation });
   });
@@ -281,6 +283,18 @@ export async function startCommand(): Promise<void> {
 
       if (tasks.length === 0) {
         wsServer.sendEvent({ type: 'status', data: { message: 'No tasks generated.' } } as NovaEvent);
+        return;
+      }
+
+      // Auto-execute mode (from Quick Edit / Multi-Edit) — skip confirmation
+      if (nextAutoExecute) {
+        nextAutoExecute = false;
+        console.log(chalk.green(`Auto-executing ${tasks.length} task(s)...`));
+        wsServer.sendEvent({ type: 'status', data: { message: `Auto-executing ${tasks.length} task(s)...` } } as NovaEvent);
+        wsServer.sendEvent({ type: 'status', data: { message: 'Confirmed! Executing tasks...' } } as NovaEvent);
+        for (const task of tasks) {
+          eventBus.emit({ type: 'task_created', data: task });
+        }
         return;
       }
 

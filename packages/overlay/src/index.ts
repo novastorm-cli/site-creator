@@ -71,6 +71,7 @@ function boot(): void {
   let selectedElement: HTMLElement | null = null;
   let lastTranscript = '';
   let isProcessing = false;
+  let autoExecute = false; // Skip confirmation for inspector/multi-edit modes
   let voiceStarted = false;
   let awaitingConfirmation = false;
   let awaitingSendConfirmation = false;
@@ -109,19 +110,21 @@ function boot(): void {
   elementInspector.mount(novaRoot);
   multiSelector.mount(novaRoot);
 
-  // Element inspector: capture DOM snapshot + instruction and send directly (no double confirmation)
+  // Element inspector: send directly, auto-execute (no confirmation needed)
   elementInspector.onSubmit((element, instruction) => {
     selectedElement = element;
+    autoExecute = true;
     void sendObservation(instruction);
   });
 
-  // Multi-element selector: build combined DOM snapshot from all marked elements
+  // Multi-element selector: send directly, auto-execute
   multiSelector.onSubmit((elements, instruction) => {
     const snapshots = elements.map(({ number, element }) => {
       const snapshot = domCapture.captureElement(element);
       return `[Element ${number}]: ${snapshot}`;
     });
     const combinedInstruction = `${instruction}\n\nMarked elements:\n${snapshots.join('\n\n')}`;
+    autoExecute = true;
     void sendObservation(combinedInstruction);
   });
 
@@ -338,8 +341,14 @@ function boot(): void {
         timestamp: Date.now(),
       };
 
-      console.log(`[Nova] Sending observation: screenshot=${screenshotBase64.length} chars, url=${window.location.href}, transcript="${transcript}"`);
-      wsClient.send(observation);
+      console.log(`[Nova] Sending observation: screenshot=${screenshotBase64.length} chars, url=${window.location.href}, transcript="${transcript}", autoExec=${autoExecute}`);
+      // Send autoExecute flag alongside observation
+      if (autoExecute) {
+        wsClient.sendRaw({ type: 'observation', data: { ...observation, autoExecute: true } });
+      } else {
+        wsClient.send(observation);
+      }
+      autoExecute = false; // Reset after sending
       statusToast.show('Command sent to Nova', 'info');
       pill.setState('listening');
     } catch (err) {
