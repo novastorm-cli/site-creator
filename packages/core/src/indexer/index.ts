@@ -12,3 +12,4 @@ export { EmbeddingService, createEmbeddingService, type EmbeddingProvider, type 
 export { OllamaEmbedding } from './OllamaEmbedding.js';
 export { TfIdfEmbedding } from './TfIdfEmbedding.js';
 export { RagIndexer } from './RagIndexer.js';
+export { FullstackGraphBuilder } from './FullstackGraphBuilder.js';

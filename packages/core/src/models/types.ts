@@ -269,6 +269,37 @@ export interface ProjectAnalysis {
 // RAG / Embeddings
 // ============================================================
 
+// ============================================================
+// Fullstack Graph
+// ============================================================
+
+export type FullstackNodeType = 'component' | 'page' | 'api_endpoint' | 'db_model' | 'middleware' | 'hook';
+
+export interface FullstackEdge {
+  from: string;         // source node ID (filePath:name)
+  to: string;           // target node ID
+  type: 'fetches' | 'imports' | 'queries' | 'middleware' | 'renders';
+  metadata?: Record<string, string>;
+}
+
+export interface FullstackNode {
+  id: string;           // filePath:name (unique)
+  name: string;
+  filePath: string;
+  type: FullstackNodeType;
+  layer: 'frontend' | 'backend' | 'database';
+  metadata: Record<string, unknown>;
+}
+
+export interface FullstackGraph {
+  nodes: FullstackNode[];
+  edges: FullstackEdge[];
+}
+
+// ============================================================
+// RAG / Embeddings
+// ============================================================
+
 export interface EmbeddingRecord {
   id: string;
   filePath: string;

@@ -8,3 +8,4 @@ export { ManifestStore } from './ManifestStore.js';
 export { HistoryStore } from './HistoryStore.js';
 export { RecipeStore } from './RecipeStore.js';
 export { HistoryRecorder } from './HistoryRecorder.js';
+export { FullstackGraphStore } from './FullstackGraphStore.js';
