@@ -4,6 +4,7 @@ import type { IPathGuard } from '../contracts/IPathGuard.js';
 import type { IAgentPromptLoader } from '../contracts/IStorage.js';
 import type { EventBus } from '../models/events.js';
 import type { TaskItem, ProjectMap, ExecutionResult, LlmClient } from '../models/types.js';
+import type { Lane4Executor } from './Lane4Executor.js';
 import { Lane3Executor } from './Lane3Executor.js';
 
 export class ExecutorPool implements IExecutorPool {
@@ -21,6 +22,7 @@ export class ExecutorPool implements IExecutorPool {
     strongModel?: string,
     agentPromptLoader?: IAgentPromptLoader,
     pathGuard?: IPathGuard,
+    private readonly lane4?: Lane4Executor,
   ) {
     // Lane 1-2 fallbacks use fast model, Lane 3-4 use strong model
     this.lane3Fast = (llm && gitManager && projectPath)
@@ -70,7 +72,11 @@ export class ExecutorPool implements IExecutorPool {
           break;
         }
         case 4: {
-          // Lane 4 (refactor/complex): use strong model
+          // Lane 4 (refactor/complex): background executor or fallback to strong model
+          if (this.lane4) {
+            result = await this.lane4.execute(task, projectMap);
+            break;
+          }
           if (!this.lane3Strong) {
             result = {
               success: false,

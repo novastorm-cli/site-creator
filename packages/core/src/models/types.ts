@@ -267,3 +267,23 @@ export interface EmbeddingRecord {
     lineEnd?: number;
   };
 }
+
+// ============================================================
+// Background Queue (Lane 4)
+// ============================================================
+
+export type BackgroundTaskStatus = 'queued' | 'running' | 'completed' | 'failed';
+
+export interface BackgroundTask {
+  id: string;
+  task: TaskItem;
+  status: BackgroundTaskStatus;
+  queuedAt: number;
+  startedAt?: number;
+  completedAt?: number;
+  branch?: string;
+  commitHash?: string;
+  diff?: string;
+  error?: string;
+  progress?: string;
+}

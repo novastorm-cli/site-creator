@@ -6,6 +6,8 @@ export { Lane1Executor } from './Lane1Executor.js';
 export { Lane2Executor } from './Lane2Executor.js';
 export { Lane3Executor } from './Lane3Executor.js';
 export { ExecutorPool } from './ExecutorPool.js';
+export { Lane4Executor } from './Lane4Executor.js';
+export { BackgroundQueue } from './BackgroundQueue.js';
 export { parseFileBlocks, parseMixedBlocks, addLineNumbers } from './fileBlocks.js';
 export type { FileBlock, DiffBlock, ParsedBlock } from './fileBlocks.js';
 export { CodeFixer } from './CodeFixer.js';

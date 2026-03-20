@@ -13,7 +13,12 @@ export type NovaEvent =
   | { type: 'cancel'; data: Record<string, never> }
   | { type: 'llm_chunk'; data: { text: string; phase: 'reasoning' | 'code'; taskId?: string } }
   | { type: 'secrets_required'; data: { envVars: string[]; taskId: string } }
-  | { type: 'analysis_complete'; data: { fileCount: number; methodCount: number } };
+  | { type: 'analysis_complete'; data: { fileCount: number; methodCount: number } }
+  | { type: 'background_queued'; data: { taskId: string; position: number } }
+  | { type: 'background_started'; data: { taskId: string; branch: string } }
+  | { type: 'background_progress'; data: { taskId: string; progress: string } }
+  | { type: 'background_completed'; data: { taskId: string; branch: string; commitHash: string; diff: string } }
+  | { type: 'background_failed'; data: { taskId: string; error: string } };
 
 export type NovaEventType = NovaEvent['type'];
 
