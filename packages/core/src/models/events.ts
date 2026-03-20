@@ -17,7 +17,12 @@ export type NovaEvent =
   | { type: 'passive_behavior'; data: BehaviorEvent }
   | { type: 'passive_pattern'; data: BehaviorPattern }
   | { type: 'passive_suggestion'; data: PassiveSuggestion }
-  | { type: 'suggestion_response'; data: { suggestionId: string; approved: boolean } };
+  | { type: 'suggestion_response'; data: { suggestionId: string; approved: boolean } }
+  | { type: 'background_queued'; data: { taskId: string; position: number } }
+  | { type: 'background_started'; data: { taskId: string; branch: string } }
+  | { type: 'background_progress'; data: { taskId: string; progress: string } }
+  | { type: 'background_completed'; data: { taskId: string; branch: string; commitHash: string; diff: string } }
+  | { type: 'background_failed'; data: { taskId: string; error: string } };
 
 export type NovaEventType = NovaEvent['type'];
 
