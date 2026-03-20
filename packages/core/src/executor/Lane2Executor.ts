@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import type { ILane2Executor } from '../contracts/IExecutor.js';
 import type { IGitManager } from '../contracts/IGitManager.js';
+import type { IPathGuard } from '../contracts/IPathGuard.js';
 import type { TaskItem, ProjectMap, ExecutionResult, LlmClient, MiniContext } from '../models/types.js';
 import { DiffApplier } from './DiffApplier.js';
 import { addLineNumbers } from './fileBlocks.js';
@@ -58,6 +59,7 @@ export class Lane2Executor implements ILane2Executor {
     private readonly projectPath: string,
     private readonly llmClient: LlmClient,
     private readonly gitManager: IGitManager,
+    private readonly pathGuard?: IPathGuard,
   ) {
     this.diffApplier = new DiffApplier();
   }
@@ -99,6 +101,7 @@ export class Lane2Executor implements ILane2Executor {
 
       // Apply diff to the file on disk
       const absPath = join(this.projectPath, targetFile);
+      await this.pathGuard?.check(absPath);
       await this.diffApplier.apply(absPath, diff);
 
       // Commit changes

@@ -12,6 +12,21 @@ export interface BrowserObservation {
   currentUrl: string;
   consoleErrors?: string[];
   timestamp: number;
+  gestureContext?: {
+    gestures: Array<{
+      type: string;
+      startTime: number;
+      endTime: number;
+      elements: Array<{
+        tagName: string;
+        selector: string;
+        domSnippet: string;
+        role: string;
+      }>;
+      region?: { x: number; y: number; width: number; height: number };
+    }>;
+    summary: string;
+  };
 }
 
 type EventCallback = (event: NovaEvent) => void;

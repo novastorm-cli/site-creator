@@ -9,12 +9,14 @@ CLI Using tsup config: /Users/vladimirpronevic/RiderProjects/site-creator/packag
 CLI Target: es2022
 CLI Cleaning output folder
 ESM Build start
-ESM dist/index.js          289.00 B
-ESM dist/chunk-UMLZPEG7.js 5.99 KB
-ESM dist/setup-P6KNCCB4.js 73.00 B
-ESM dist/chunk-NF24IAMY.js 44.00 KB
-ESM dist/bin/nova.js       181.00 B
+ESM dist/index.js            319.00 B
+ESM dist/setup-WNMODRZJ.js   103.00 B
+ESM dist/package-TG2CJSA7.js 865.00 B
+ESM dist/chunk-26MAYSAJ.js   7.08 KB
+ESM dist/chunk-3RG5ZIWI.js   390.00 B
+ESM dist/chunk-B2EYX37M.js   63.55 KB
+ESM dist/bin/nova.js         212.00 B
 ESM ⚡️ Build success in 18ms
 DTS Build start
-DTS ⚡️ Build success in 894ms
-DTS dist/index.d.ts 2.32 KB
+DTS ⚡️ Build success in 922ms
+DTS dist/index.d.ts 2.40 KB

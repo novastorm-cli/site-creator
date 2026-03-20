@@ -1,5 +1,7 @@
 import type { IExecutorPool, ILane1Executor, ILane2Executor } from '../contracts/IExecutor.js';
 import type { IGitManager } from '../contracts/IGitManager.js';
+import type { IPathGuard } from '../contracts/IPathGuard.js';
+import type { IAgentPromptLoader } from '../contracts/IStorage.js';
 import type { EventBus } from '../models/events.js';
 import type { TaskItem, ProjectMap, ExecutionResult, LlmClient } from '../models/types.js';
 import { Lane3Executor } from './Lane3Executor.js';
@@ -17,13 +19,15 @@ export class ExecutorPool implements IExecutorPool {
     projectPath?: string,
     fastModel?: string,
     strongModel?: string,
+    agentPromptLoader?: IAgentPromptLoader,
+    pathGuard?: IPathGuard,
   ) {
     // Lane 1-2 fallbacks use fast model, Lane 3-4 use strong model
     this.lane3Fast = (llm && gitManager && projectPath)
-      ? new Lane3Executor(projectPath, llm, gitManager, this.eventBus, 3, fastModel)
+      ? new Lane3Executor(projectPath, llm, gitManager, this.eventBus, 3, fastModel, agentPromptLoader, pathGuard)
       : null;
     this.lane3Strong = (llm && gitManager && projectPath)
-      ? new Lane3Executor(projectPath, llm, gitManager, this.eventBus, 3, strongModel)
+      ? new Lane3Executor(projectPath, llm, gitManager, this.eventBus, 3, strongModel, agentPromptLoader, pathGuard)
       : null;
   }
 

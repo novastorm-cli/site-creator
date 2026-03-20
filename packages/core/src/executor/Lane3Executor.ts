@@ -3,6 +3,8 @@ import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import type { TaskItem, ProjectMap, ExecutionResult, LlmClient } from '../models/types.js';
 import type { IGitManager } from '../contracts/IGitManager.js';
+import type { IPathGuard } from '../contracts/IPathGuard.js';
+import type { IAgentPromptLoader } from '../contracts/IStorage.js';
 import type { EventBus } from '../models/events.js';
 import type { FileBlock, ParsedBlock } from './fileBlocks.js';
 import { parseFileBlocks, parseMixedBlocks, addLineNumbers } from './fileBlocks.js';
@@ -110,6 +112,8 @@ export class Lane3Executor {
     private readonly eventBus?: EventBus,
     private readonly maxFixIterations: number = 3,
     private readonly modelName?: string,
+    private readonly agentPromptLoader?: IAgentPromptLoader,
+    private readonly pathGuard?: IPathGuard,
   ) {
     this.diffApplier = new DiffApplier();
   }
@@ -158,8 +162,13 @@ export class Lane3Executor {
 
       const prompt = buildPrompt(task, projectMap, existingFiles);
 
+      // Load developer prompt (custom or default)
+      const developerPrompt = this.agentPromptLoader
+        ? await this.agentPromptLoader.load('developer', this.projectPath)
+        : SYSTEM_PROMPT;
+
       // Combine system + user into single message for Claude CLI compatibility
-      const fullPrompt = `${SYSTEM_PROMPT}\n\n---\n\n${prompt}\n\nRemember: Output ONLY === FILE === or === DIFF === blocks. No text, no explanations. Start immediately with ===`;
+      const fullPrompt = `${developerPrompt}\n\n---\n\n${prompt}\n\nRemember: Output ONLY === FILE === or === DIFF === blocks. No text, no explanations. Start immediately with ===`;
 
       const response = await streamWithEvents(
         this.llmClient,
@@ -201,7 +210,28 @@ export class Lane3Executor {
       }
 
       // Apply blocks: write full files or apply diffs
-      const fileBlocks = await this.applyMixedBlocks(mixedBlocks);
+      const { files: fileBlocks, failedDiffPaths } = await this.applyMixedBlocks(mixedBlocks);
+
+      // Retry failed diffs by requesting full file content from LLM
+      if (failedDiffPaths.length > 0) {
+        try {
+          const retriedBlocks = await this.retryFailedDiffsAsFullFiles(failedDiffPaths, task, developerPrompt);
+          fileBlocks.push(...retriedBlocks);
+        } catch (retryErr) {
+          console.log(`[Nova] Warning: retry failed diffs threw, continuing with existing blocks`);
+          console.log(`[Nova]   Reason: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
+        }
+      }
+
+      // If no files were written at all, fail early instead of trying to commit nothing
+      if (fileBlocks.length === 0) {
+        console.log(`[Nova] Developer: all blocks failed, nothing to commit`);
+        return {
+          success: false,
+          taskId: task.id,
+          error: 'All diff applications failed and retry produced no output.',
+        };
+      }
 
       // Detect missing env vars in generated code (both full files and diffs)
       const envDetector = new EnvDetector();
@@ -240,7 +270,14 @@ export class Lane3Executor {
         console.log(`[Nova] Tester: validating (iteration ${iteration}/${this.maxFixIterations})...`);
         this.eventBus?.emit({ type: 'status', data: { message: `Validating code (${iteration}/${this.maxFixIterations})...` } });
 
-        errors = await validator.validateFiles(currentBlocks);
+        try {
+          errors = await validator.validateFiles(currentBlocks);
+        } catch (validationCrash: unknown) {
+          const msg = validationCrash instanceof Error ? validationCrash.message : String(validationCrash);
+          console.log(`[Nova] Tester: validation crashed, skipping validation: ${msg}`);
+          this.eventBus?.emit({ type: 'status', data: { message: 'Validation unavailable, committing as-is...' } });
+          break;
+        }
 
         if (errors.length === 0) {
           console.log(`[Nova] Tester: all checks passed!`);
@@ -252,6 +289,7 @@ export class Lane3Executor {
         for (const err of errors.slice(0, 5)) {
           console.log(`[Nova]   ${err.file}${err.line ? ':' + err.line : ''} — ${err.message}`);
         }
+        this.eventBus?.emit({ type: 'status', data: { message: `Found ${errors.length} error(s) in generated code, auto-fixing...` } });
 
         if (iteration >= this.maxFixIterations) {
           console.log(`[Nova] Director: max iterations reached, committing with warnings`);
@@ -273,6 +311,7 @@ export class Lane3Executor {
         // Write fixed files
         for (const block of fixedBlocks) {
           const absPath = join(this.projectPath, block.path);
+          await this.pathGuard?.check(absPath);
           await mkdir(dirname(absPath), { recursive: true });
           await writeFile(absPath, block.content, 'utf-8');
         }
@@ -284,7 +323,7 @@ export class Lane3Executor {
       const writtenFiles = currentBlocks.map(b => b.path);
 
       // Commit all changes (sanitize message for git)
-      const safeMsg = `nova: ${task.description.replace(/['"\\`$]/g, '').slice(0, 120)}`;
+      const safeMsg = `nova: ${task.description.replace(/[\n\r'"\\`$]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 72)}`;
       const commitHash = await this.gitManager.commit(
         safeMsg,
         writtenFiles,
@@ -355,22 +394,26 @@ export class Lane3Executor {
 
   /**
    * Apply mixed blocks: write full files or apply diffs.
-   * Returns normalized FileBlock[] (all with full content) for validation.
+   * Returns normalized FileBlock[] (all with full content) for validation,
+   * plus a list of file paths where diff application completely failed.
    */
-  private async applyMixedBlocks(blocks: ParsedBlock[]): Promise<FileBlock[]> {
+  private async applyMixedBlocks(blocks: ParsedBlock[]): Promise<{ files: FileBlock[]; failedDiffPaths: string[] }> {
     const result: FileBlock[] = [];
+    const failedDiffPaths: string[] = [];
 
     for (const block of blocks) {
       const absPath = join(this.projectPath, block.path);
 
       if (block.type === 'file') {
         // New file or full replacement — write directly
+        await this.pathGuard?.check(absPath);
         await mkdir(dirname(absPath), { recursive: true });
         await writeFile(absPath, block.content, 'utf-8');
         result.push({ path: block.path, content: block.content });
       } else {
         // Diff block — apply to existing file
         try {
+          await this.pathGuard?.check(absPath);
           await this.diffApplier.apply(absPath, block.diff);
           const updatedContent = await readFile(absPath, 'utf-8');
           result.push({ path: block.path, content: updatedContent });
@@ -388,14 +431,88 @@ export class Lane3Executor {
               result.push({ path: block.path, content: patched });
               console.log(`[Nova]   Fuzzy apply succeeded for ${block.path}`);
             } else {
-              console.log(`[Nova]   Fuzzy apply made no changes, keeping file`);
-              result.push({ path: block.path, content: existingContent });
+              console.log(`[Nova]   Fuzzy apply made no changes, marking for retry`);
+              failedDiffPaths.push(block.path);
             }
           } catch {
-            const existingContent = await readFile(absPath, 'utf-8');
-            result.push({ path: block.path, content: existingContent });
+            console.log(`[Nova]   Fuzzy apply threw, marking ${block.path} for retry`);
+            failedDiffPaths.push(block.path);
           }
         }
+      }
+    }
+
+    return { files: result, failedDiffPaths };
+  }
+
+  /**
+   * Retry failed diff blocks by asking the LLM for full file content.
+   * Returns FileBlock[] for the successfully retried files.
+   */
+  private async retryFailedDiffsAsFullFiles(
+    failedPaths: string[],
+    task: TaskItem,
+    systemPrompt: string = SYSTEM_PROMPT,
+  ): Promise<FileBlock[]> {
+    console.log(`[Nova] Diff apply failed for ${failedPaths.length} file(s), retrying with full file request...`);
+    this.eventBus?.emit({ type: 'status', data: { message: `Retrying ${failedPaths.length} failed diff(s) as full files...` } });
+
+    // Build a focused prompt with current file contents
+    const fileSections: string[] = [];
+    for (const filePath of failedPaths) {
+      const absPath = join(this.projectPath, filePath);
+      try {
+        const content = await readFile(absPath, 'utf-8');
+        fileSections.push(`Current content of ${filePath}:\n\`\`\`\n${content}\n\`\`\``);
+      } catch {
+        fileSections.push(`File ${filePath} could not be read.`);
+      }
+    }
+
+    const retryPrompt = `You previously tried to modify these files with a diff but it failed to apply.
+Output the COMPLETE updated file content for each file using === FILE === blocks.
+
+Task: ${task.description}
+Files to output: ${failedPaths.join(', ')}
+
+${fileSections.join('\n\n')}
+
+Output ONLY === FILE === blocks with the complete updated content. No diffs. No explanations.`;
+
+    const fullRetryPrompt = `${systemPrompt}\n\n---\n\n${retryPrompt}`;
+
+    const response = await streamWithEvents(
+      this.llmClient,
+      [{ role: 'user', content: fullRetryPrompt }],
+      { temperature: 0, model: this.modelName },
+      this.eventBus,
+      task.id,
+    );
+
+    console.log(`[Nova] Retry LLM responded (${response.length} chars)`);
+
+    // Parse only FILE blocks from retry response
+    const retryBlocks = parseFileBlocks(response);
+    const result: FileBlock[] = [];
+
+    for (const block of retryBlocks) {
+      if (!failedPaths.includes(block.path)) {
+        console.log(`[Nova]   Ignoring unexpected file from retry: ${block.path}`);
+        continue;
+      }
+      const absPath = join(this.projectPath, block.path);
+      await this.pathGuard?.check(absPath);
+      await mkdir(dirname(absPath), { recursive: true });
+      await writeFile(absPath, block.content, 'utf-8');
+      result.push(block);
+      console.log(`[Nova]   Retry succeeded for ${block.path} (${block.content.length} chars)`);
+    }
+
+    // Report files that still failed
+    const retriedPaths = new Set(result.map(b => b.path));
+    for (const p of failedPaths) {
+      if (!retriedPaths.has(p)) {
+        console.log(`[Nova]   Retry did not produce output for ${p}`);
       }
     }
 

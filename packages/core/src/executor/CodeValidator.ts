@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -42,8 +43,6 @@ export class CodeValidator {
   }
 
   private resolveTsc(): { cmd: string; baseArgs: string[] } {
-    const { existsSync } = require('node:fs') as typeof import('node:fs');
-
     // 1. Check project-local tsc
     const localTsc = join(this.projectPath, 'node_modules', '.bin', 'tsc');
     if (existsSync(localTsc)) {

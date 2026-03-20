@@ -2,6 +2,14 @@ import type { IPromptBuilder } from '../contracts/IBrain.js';
 import type { Message, Observation, ProjectMap, TaskItem } from '../models/types.js';
 
 export class PromptBuilder implements IPromptBuilder {
+  private ragSnippets: string[] = [];
+
+  setRagSnippets(snippets: Array<{ filePath: string; chunkText: string }>): void {
+    this.ragSnippets = snippets.map(
+      (s) => `--- ${s.filePath} ---\n${s.chunkText}`,
+    );
+  }
+
   buildAnalysisPrompt(observation: Observation, projectMap: ProjectMap): Message[] {
     const systemContent = [
       'You are a JSON-only task decomposition API. Respond with ONLY a raw JSON array.',
@@ -42,8 +50,27 @@ export class PromptBuilder implements IPromptBuilder {
       userParts.push(`DOM snapshot:\n${observation.domSnapshot}`);
     }
 
+    if (observation.gestureContext?.summary) {
+      userParts.push(`Cursor gesture context:\n${observation.gestureContext.summary}`);
+    }
+
     userParts.push(`Current URL: ${observation.currentUrl}`);
+
+    // Include service architecture info if available
+    if (projectMap.frontend || (projectMap.backends && projectMap.backends.length > 0)) {
+      const archParts: string[] = ['Service architecture:'];
+      if (projectMap.frontend) archParts.push(`  Frontend: ${projectMap.frontend}`);
+      if (projectMap.backends && projectMap.backends.length > 0) {
+        archParts.push(`  Backends: ${projectMap.backends.join(', ')}`);
+      }
+      userParts.push(archParts.join('\n'));
+    }
+
     userParts.push(`Project context:\n${projectMap.compressedContext}`);
+
+    if (this.ragSnippets.length > 0) {
+      userParts.push(`Relevant code context:\n${this.ragSnippets.join('\n\n')}`);
+    }
 
     // Combine into single user message for Claude CLI compatibility
     const combined = `${systemContent}\n\n---\n\n${userParts.join('\n\n')}\n\nRespond with ONLY a JSON array. Start with [`;

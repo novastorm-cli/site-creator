@@ -1,86 +1,110 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import crypto from 'node:crypto';
 import { Telemetry } from '../Telemetry.js';
+import type { TelemetryPayload } from '@nova-architect/core';
+
+function makePayload(overrides: Partial<TelemetryPayload> = {}): TelemetryPayload {
+  return {
+    machineId: 'abc123',
+    gitAuthors90d: 2,
+    projectHash: 'def456',
+    cliVersion: '0.0.1',
+    os: 'darwin',
+    timestamp: '2026-03-20T12:00:00.000Z',
+    licenseKey: null,
+    ...overrides,
+  };
+}
 
 describe('Telemetry', () => {
   let telemetry: Telemetry;
   let fetchSpy: ReturnType<typeof vi.fn>;
-  const originalEnv = { ...process.env };
   const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
     telemetry = new Telemetry();
 
-    fetchSpy = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    fetchSpy = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ nudge_level: 0 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
     globalThis.fetch = fetchSpy;
-
-    // Ensure telemetry is enabled by default
-    delete process.env.NOVA_TELEMETRY;
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    process.env = { ...originalEnv };
     vi.restoreAllMocks();
   });
 
   // ── Basic send behavior ──────────────────────────────────
 
   describe('send()', () => {
-    it('should call fetch with POST and correct payload shape', async () => {
-      await telemetry.send('NOVA-KEY-abcd', 2, '/projects/test');
+    it('should call fetch with POST and correct payload', async () => {
+      const payload = makePayload({ licenseKey: 'NOVA-KEY-abcd' });
+      await telemetry.send(payload);
 
       expect(fetchSpy).toHaveBeenCalledOnce();
 
       const [url, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
 
-      expect(url).toBe('https://api.nova-architect.dev/telemetry');
+      expect(url).toBe('https://api.nova-architect.dev/v1/telemetry');
       expect(options.method).toBe('POST');
 
       const body = JSON.parse(options.body as string);
       expect(body).toEqual(
         expect.objectContaining({
+          machineId: 'abc123',
+          gitAuthors90d: 2,
+          projectHash: 'def456',
+          cliVersion: '0.0.1',
+          os: 'darwin',
           licenseKey: 'NOVA-KEY-abcd',
-          devCount: 2,
-          projectHash: expect.any(String),
-          version: expect.any(String),
         }),
       );
     });
 
-    it('should hash projectPath with sha256 for projectHash', async () => {
-      const projectPath = '/my/project/path';
-      const expectedHash = crypto.createHash('sha256').update(projectPath).digest('hex');
-
-      await telemetry.send(null, 1, projectPath);
-
-      expect(fetchSpy).toHaveBeenCalledOnce();
-
-      const [, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
-      const body = JSON.parse(options.body as string);
-
-      expect(body.projectHash).toBe(expectedHash);
-    });
-
     it('should pass null licenseKey through to payload', async () => {
-      await telemetry.send(null, 1, '/path');
+      await telemetry.send(makePayload({ licenseKey: null }));
 
       const [, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
       const body = JSON.parse(options.body as string);
 
       expect(body.licenseKey).toBeNull();
     });
-  });
 
-  // ── Disabled via env ─────────────────────────────────────
+    it('should return TelemetryResponse with nudgeLevel when server responds', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(JSON.stringify({ nudge_level: 2 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
 
-  describe('NOVA_TELEMETRY=false', () => {
-    it('should NOT call fetch when NOVA_TELEMETRY is set to "false"', async () => {
-      process.env.NOVA_TELEMETRY = 'false';
+      const result = await telemetry.send(makePayload());
 
-      await telemetry.send('key', 1, '/path');
+      expect(result).toEqual({ nudgeLevel: 2 });
+    });
 
-      expect(fetchSpy).not.toHaveBeenCalled();
+    it('should return nudgeLevel 0 when server omits nudge_level', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      const result = await telemetry.send(makePayload());
+
+      expect(result).toEqual({ nudgeLevel: 0 });
+    });
+
+    it('should return null when server returns non-ok status', async () => {
+      fetchSpy.mockResolvedValue(new Response('error', { status: 500 }));
+
+      const result = await telemetry.send(makePayload());
+
+      expect(result).toBeNull();
     });
   });
 
@@ -90,17 +114,25 @@ describe('Telemetry', () => {
     it('should not propagate exceptions when fetch throws', async () => {
       fetchSpy.mockRejectedValue(new Error('network failure'));
 
-      await expect(telemetry.send('key', 1, '/path')).resolves.toBeUndefined();
+      const result = await telemetry.send(makePayload());
+
+      expect(result).toBeNull();
     });
 
     it('should not propagate exceptions on fetch timeout', async () => {
       fetchSpy.mockImplementation(
-        () => new Promise((_, reject) => {
-          setTimeout(() => reject(new DOMException('The operation was aborted', 'AbortError')), 10);
-        }),
+        () =>
+          new Promise((_, reject) => {
+            setTimeout(
+              () => reject(new DOMException('The operation was aborted', 'AbortError')),
+              10,
+            );
+          }),
       );
 
-      await expect(telemetry.send('key', 1, '/path')).resolves.toBeUndefined();
+      const result = await telemetry.send(makePayload());
+
+      expect(result).toBeNull();
     });
   });
 });

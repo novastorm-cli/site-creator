@@ -9,6 +9,7 @@ import { statusCommand } from './commands/status.js';
 import { tasksCommand } from './commands/tasks.js';
 import { reviewCommand } from './commands/review.js';
 import { watchCommand } from './commands/watch.js';
+import { licenseCommand } from './commands/license.js';
 import { runSetup } from './setup.js';
 
 export { ConfigReader } from './config.js';
@@ -28,12 +29,16 @@ export function createCli(): Command {
   program
     .name('nova')
     .description('Nova Architect - AI-powered site creation assistant')
-    .version(pkg.version);
+    .version(pkg.version)
+    .option('--no-telemetry', 'Disable telemetry for this run');
 
   program
     .command('start', { isDefault: true })
     .description('Start Nova Architect')
     .action(async () => {
+      if (!program.opts().telemetry) {
+        process.env['NOVA_TELEMETRY'] = 'false';
+      }
       await startCommand();
     });
 
@@ -103,6 +108,13 @@ export function createCli(): Command {
     .description('Watch for file changes')
     .action(async () => {
       await watchCommand();
+    });
+
+  program
+    .command('license [subcommand] [key]')
+    .description('Manage license: nova license [status|activate <key>]')
+    .action(async (subcommand?: string, key?: string) => {
+      await licenseCommand(subcommand, key);
     });
 
   return program;

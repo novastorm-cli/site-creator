@@ -16,6 +16,22 @@ export type ParsedBlock =
  * Add line numbers to file content for LLM context.
  * Format: "1 | const foo = 1;"
  */
+/**
+ * Sanitize a file path from LLM output:
+ * - Strip leading `/` to prevent absolute paths
+ * - Reject `..` segments to prevent path traversal
+ */
+function sanitizePath(filePath: string): string | null {
+  // Strip leading slashes
+  let sanitized = filePath.replace(/^\/+/, '');
+  // Reject path traversal
+  const segments = sanitized.split(/[\\/]/);
+  if (segments.some(s => s === '..')) {
+    return null;
+  }
+  return sanitized;
+}
+
 export function addLineNumbers(content: string): string {
   return content
     .split('\n')
@@ -29,8 +45,9 @@ export function parseFileBlocks(response: string): FileBlock[] {
 
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(response)) !== null) {
-    const filePath = match[1].trim();
+    const rawPath = match[1].trim();
     const content = match[2].trim();
+    const filePath = sanitizePath(rawPath);
     if (filePath && content) {
       blocks.push({ path: filePath, content });
     }
@@ -41,8 +58,9 @@ export function parseFileBlocks(response: string): FileBlock[] {
     // Try markdown code blocks with filenames
     const mdPattern = /```(?:\w+)?\s*\n?\/\/\s*(.+?)\n([\s\S]*?)```/g;
     while ((match = mdPattern.exec(response)) !== null) {
-      const filePath = match[1].trim();
+      const rawPath = match[1].trim();
       const content = match[2].trim();
+      const filePath = sanitizePath(rawPath);
       if (filePath && content) {
         blocks.push({ path: filePath, content });
       }
@@ -68,19 +86,20 @@ export function parseMixedBlocks(response: string): ParsedBlock[] {
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(response)) !== null) {
     const blockType = match[1];
-    const path = match[2].trim();
+    const rawPath = match[2].trim();
     const body = match[3].trim();
-    if (!path || !body) continue;
+    const safePath = sanitizePath(rawPath);
+    if (!safePath || !body) continue;
 
     if (blockType === 'FILE') {
-      blocks.push({ type: 'file', path, content: body });
+      blocks.push({ type: 'file', path: safePath, content: body });
     } else {
       // Validate it looks like a real diff (has at least one hunk header)
       if (/^@@\s/m.test(body) || /^---\s/m.test(body)) {
-        blocks.push({ type: 'diff', path, diff: body });
+        blocks.push({ type: 'diff', path: safePath, diff: body });
       } else {
         // Fallback: model output full content in a DIFF block — treat as file
-        blocks.push({ type: 'file', path, content: body });
+        blocks.push({ type: 'file', path: safePath, content: body });
       }
     }
   }

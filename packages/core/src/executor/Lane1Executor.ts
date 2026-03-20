@@ -1,5 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import type { ILane1Executor } from '../contracts/IExecutor.js';
+import type { IPathGuard } from '../contracts/IPathGuard.js';
 import type { TaskItem, ProjectMap, ExecutionResult } from '../models/types.js';
 import { DiffApplier } from './DiffApplier.js';
 
@@ -56,7 +57,10 @@ function parsePropertyChange(
 export class Lane1Executor implements ILane1Executor {
   private readonly diffApplier: DiffApplier;
 
-  constructor(private readonly projectPath: string) {
+  constructor(
+    private readonly projectPath: string,
+    private readonly pathGuard?: IPathGuard,
+  ) {
     this.diffApplier = new DiffApplier();
   }
 
@@ -183,6 +187,7 @@ export class Lane1Executor implements ILane1Executor {
 
       if (matched && content !== before) {
         const diff = this.diffApplier.generate(before, content, filePath);
+        await this.pathGuard?.check(filePath);
         await writeFile(filePath, content, 'utf-8');
         return diff;
       }
@@ -205,6 +210,7 @@ export class Lane1Executor implements ILane1Executor {
 
     if (replaced && content !== before) {
       const diff = this.diffApplier.generate(before, content, filePath);
+      await this.pathGuard?.check(filePath);
       await writeFile(filePath, content, 'utf-8');
       return diff;
     }

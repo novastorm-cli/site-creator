@@ -72,6 +72,7 @@ export class WebSocketServer implements IWebSocketServer {
             currentUrl: obsData.currentUrl ?? '',
             consoleErrors: obsData.consoleErrors,
             timestamp: obsData.timestamp ?? Date.now(),
+            gestureContext: obsData.gestureContext,
           };
 
           const autoExecute = obsData.autoExecute === true;

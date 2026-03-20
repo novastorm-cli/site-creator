@@ -9,6 +9,9 @@ import { ScreenshotCapture } from './capture/ScreenshotCapture.js';
 import { DomCapture } from './capture/DomCapture.js';
 import { VoiceCapture } from './capture/VoiceCapture.js';
 import { ConsoleCapture } from './capture/ConsoleCapture.js';
+import { CursorTracker } from './capture/CursorTracker.js';
+import { GestureRecognizer } from './capture/GestureRecognizer.js';
+import { TemporalCorrelator } from './capture/TemporalCorrelator.js';
 import { OverlayPill } from './ui/OverlayPill.js';
 import { CommandInput } from './ui/CommandInput.js';
 import { ElementSelector } from './ui/ElementSelector.js';
@@ -83,6 +86,24 @@ function boot(): void {
   let executingToastId: string | null = null;
   let totalTasks = 0;
   let completedTasks = 0;
+
+  // Gesture tracking
+  const cursorTracker = new CursorTracker();
+  const gestureRecognizer = new GestureRecognizer(cursorTracker, domCapture);
+  const temporalCorrelator = new TemporalCorrelator(cursorTracker, gestureRecognizer, domCapture);
+  let gestureModeEnabled = localStorage.getItem('nova-gesture-mode') === 'true';
+
+  function updateCursorTracking(): void {
+    const shouldTrack = gestureModeEnabled
+      && voiceStarted
+      && !elementInspector.isActive()
+      && !multiSelector.isActive();
+    if (shouldTrack && !cursorTracker.isTracking()) {
+      cursorTracker.start();
+    } else if (!shouldTrack && cursorTracker.isTracking()) {
+      cursorTracker.stop();
+    }
+  }
 
   // Install console capture
   consoleCapture.install();
@@ -259,10 +280,13 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
       voiceCapture.start();
       voiceStarted = true;
       pill.setState('listening');
+      updateCursorTracking();
     } else {
       // Stop recording — if there was text, show send confirmation
       voiceCapture.stop();
+      voiceStarted = false;
       pill.setState('idle');
+      updateCursorTracking();
 
       if (hasRecordedText && lastTranscript.trim().length >= 3) {
         const text = lastTranscript.trim();
@@ -356,6 +380,10 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
         ? domCapture.captureElement(selectedElement)
         : undefined;
 
+      const gestureContext = gestureModeEnabled && !autoExecute
+        ? temporalCorrelator.resolve()
+        : undefined;
+
       const observation: BrowserObservation = {
         screenshotBase64,
         domSnapshot,
@@ -363,6 +391,7 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
         currentUrl: window.location.href,
         consoleErrors: consoleCapture.getErrors(),
         timestamp: Date.now(),
+        gestureContext: gestureContext?.gestures.length ? gestureContext : undefined,
       };
 
       console.log(`[Nova] Sending observation: screenshot=${screenshotBase64.length} chars, url=${window.location.href}, transcript="${transcript}", autoExec=${autoExecute}`);
@@ -373,6 +402,8 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
         wsClient.send(observation);
       }
       autoExecute = false; // Reset after sending
+      cursorTracker.clear();
+      temporalCorrelator.clear();
       pill.setState('processing');
       executingToastId = statusToast.show('🧠 AI is thinking... please wait', 'info', 0);
     } catch (err) {
@@ -391,6 +422,11 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
   // Collect voice transcripts — update transcript bar, track text
   voiceCapture.onTranscript((result) => {
     transcriptBar.setTranscript(result.text, result.isFinal);
+
+    // Feed transcripts to temporal correlator for gesture correlation
+    if (gestureModeEnabled) {
+      temporalCorrelator.addTranscript(result);
+    }
 
     // Track that user has spoken something
     if (result.text.trim().length > 0) {
@@ -432,6 +468,22 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
     }
   });
 
+  // Pill dropdown: Gesture Mode
+  pill.onGestureMode(() => {
+    gestureModeEnabled = !gestureModeEnabled;
+    localStorage.setItem('nova-gesture-mode', String(gestureModeEnabled));
+    pill.setGestureModeActive(gestureModeEnabled);
+    updateCursorTracking();
+    if (gestureModeEnabled) {
+      statusToast.show('Gesture Mode ON \u2014 point at elements while speaking (Option+G)', 'info', 2000);
+    } else {
+      statusToast.show('Gesture Mode OFF', 'info', 1500);
+    }
+  });
+
+  // Set initial gesture mode visual
+  pill.setGestureModeActive(gestureModeEnabled);
+
   // Keyboard mutual exclusion for inspector modes
   document.addEventListener('keydown', (e) => {
     if (e.altKey && e.code === 'KeyI') {
@@ -443,6 +495,7 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
         } else {
           pill.setActiveMode('none');
         }
+        updateCursorTracking();
       }, 10);
     }
     if (e.altKey && e.code === 'KeyK') {
@@ -454,7 +507,24 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
         } else {
           pill.setActiveMode('none');
         }
+        updateCursorTracking();
       }, 10);
+    }
+    if (e.altKey && e.code === 'KeyM') {
+      e.preventDefault();
+      window.open('/nova-project-map', '_blank');
+    }
+    if (e.altKey && e.code === 'KeyG') {
+      e.preventDefault();
+      gestureModeEnabled = !gestureModeEnabled;
+      localStorage.setItem('nova-gesture-mode', String(gestureModeEnabled));
+      pill.setGestureModeActive(gestureModeEnabled);
+      updateCursorTracking();
+      if (gestureModeEnabled) {
+        statusToast.show('Gesture Mode ON \u2014 point at elements while speaking (Option+G)', 'info', 2000);
+      } else {
+        statusToast.show('Gesture Mode OFF', 'info', 1500);
+      }
     }
   });
 
@@ -530,11 +600,11 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
         activityLog.addEntry(`Starting: ${event.data.taskId}`, 'info');
         break;
       case 'llm_chunk':
-        taskPanel.setStreamingText(
-          event.data.taskId ?? '',
-          event.data.text,
-          event.data.phase,
-        );
+        // Show brief phase status instead of raw code in task panel
+        if (event.data.taskId) {
+          const phaseLabel = event.data.phase === 'reasoning' ? 'Thinking...' : 'Generating code...';
+          taskPanel.setStreamingText(event.data.taskId, phaseLabel, event.data.phase);
+        }
         // Activity log: accumulate reasoning, detect file writes in code
         if (event.data.phase === 'reasoning') {
           reasoningBuffer += event.data.text;
@@ -570,6 +640,12 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
         if (envVars && envVars.length > 0) {
           secretConsole.show(envVars);
         }
+        break;
+      }
+      case 'analysis_complete': {
+        const { fileCount, methodCount } = event.data as { fileCount: number; methodCount: number };
+        statusToast.show(`Project analyzed: ${fileCount} files, ${methodCount} methods`, 'success', 4000);
+        activityLog.addEntry(`Project analyzed: ${fileCount} files, ${methodCount} methods`, 'success');
         break;
       }
       case 'status': {
@@ -644,6 +720,14 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
           statusToast.show('Build fix applied! Reloading...', 'success', 3000);
           // Reload page after short delay to pick up hot-reload changes
           setTimeout(() => window.location.reload(), 1500);
+        } else if (msg === 'autofix_failed') {
+          autofixInProgress = false;
+          if (autofixToastId) {
+            statusToast.dismiss(autofixToastId);
+            autofixToastId = null;
+          }
+          pill.setState('error');
+          statusToast.show('Auto-fix failed. Check console for details.', 'error');
         } else if (msg.startsWith('Confirmed!')) {
           pill.setState('processing');
           executingToastId = statusToast.show(msg, 'info', 0);

@@ -1,6 +1,6 @@
 import type { IVoiceCapture } from '../contracts/ICapture.js';
 
-type TranscriptResult = { text: string; isFinal: boolean };
+type TranscriptResult = { text: string; isFinal: boolean; timestamp: number };
 
 interface SpeechRecognitionEvent {
   results: SpeechRecognitionResultList;
@@ -82,7 +82,7 @@ export class VoiceCapture implements IVoiceCapture {
         const result = event.results[i];
         const text = result[0]?.transcript ?? '';
         const isFinal = result.isFinal;
-        this.emit({ text, isFinal });
+        this.emit({ text, isFinal, timestamp: Date.now() });
       }
     };
 

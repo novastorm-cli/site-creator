@@ -1,4 +1,4 @@
-import type { DependencyNode, SearchResult } from '../models/types.js';
+import type { DependencyNode, SearchResult, EmbeddingRecord, ProjectAnalysis } from '../models/types.js';
 
 export interface INovaDir {
   /**
@@ -60,6 +60,10 @@ export interface IGraphStore {
   search(keyword: string): Promise<DependencyNode[]>;
 }
 
+export interface IAgentPromptLoader {
+  load(agentName: string, projectPath: string): Promise<string>;
+}
+
 export interface ISearchRouter {
   /**
    * Unified search across all available search levels.
@@ -73,4 +77,23 @@ export interface ISearchRouter {
    * @param limit - max results (default 10)
    */
   search(query: string, limit?: number): Promise<SearchResult[]>;
+}
+
+export interface IVectorStore {
+  load(filePath: string): Promise<void>;
+  save(filePath: string): Promise<void>;
+  upsert(record: EmbeddingRecord): void;
+  remove(filePath: string): void;
+  search(queryEmbedding: number[], limit: number): Array<{ record: EmbeddingRecord; score: number }>;
+  getRecordCount(): number;
+}
+
+export interface IEmbeddingService {
+  embed(texts: string[]): Promise<number[][]>;
+  embedSingle(text: string): Promise<number[]>;
+}
+
+export interface IProjectAnalyzer {
+  analyze(projectPath: string, projectMap?: import('../models/types.js').ProjectMap): Promise<ProjectAnalysis>;
+  getAnalysis(projectPath: string): Promise<ProjectAnalysis | null>;
 }

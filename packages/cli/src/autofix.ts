@@ -157,6 +157,7 @@ Error: ${errorOutput.slice(0, 300)}`;
     console.log(chalk.cyan('[Nova] Auto-fixing image errors...'));
     this.wsServer.sendEvent({ type: 'status', data: { message: 'autofix_start' } });
     this.eventBus.emit({ type: 'task_started', data: { taskId: task.id } });
+    this.wsServer.sendEvent({ type: 'task_created', data: task });
 
     const result = await executor.execute(task, this.projectMap);
 
@@ -169,8 +170,10 @@ Error: ${errorOutput.slice(0, 300)}`;
       this.wsServer.sendEvent({ type: 'status', data: { message: 'autofix_end' } });
     } else {
       console.log(chalk.red(`[Nova] Failed to fix image errors: ${result.error}`));
-      this.eventBus.emit({ type: 'task_failed', data: { taskId: task.id, error: result.error ?? '' } });
-      this.wsServer.sendEvent({ type: 'status', data: { message: 'autofix_end' } });
+      const failEvent = { type: 'task_failed' as const, data: { taskId: task.id, error: result.error ?? 'Image fix failed' } };
+      this.eventBus.emit(failEvent);
+      this.wsServer.sendEvent(failEvent);
+      this.wsServer.sendEvent({ type: 'status', data: { message: 'autofix_failed' } });
     }
   }
 
@@ -217,8 +220,10 @@ Error: ${errorOutput.slice(0, 300)}`;
       this.wsServer.sendEvent({ type: 'status', data: { message: 'autofix_end' } });
     } else {
       console.log(chalk.red(`[Nova] Auto-fix failed: ${result.error}`));
-      this.eventBus.emit({ type: 'task_failed', data: { taskId: task.id, error: result.error ?? '' } });
-      this.wsServer.sendEvent({ type: 'status', data: { message: 'autofix_end' } });
+      const failEvent = { type: 'task_failed' as const, data: { taskId: task.id, error: result.error ?? 'Auto-fix failed' } };
+      this.eventBus.emit(failEvent);
+      this.wsServer.sendEvent(failEvent);
+      this.wsServer.sendEvent({ type: 'status', data: { message: 'autofix_failed' } });
     }
   }
 }

@@ -12,7 +12,8 @@ export type NovaEvent =
   | { type: 'confirm'; data: Record<string, never> }
   | { type: 'cancel'; data: Record<string, never> }
   | { type: 'llm_chunk'; data: { text: string; phase: 'reasoning' | 'code'; taskId?: string } }
-  | { type: 'secrets_required'; data: { envVars: string[]; taskId: string } };
+  | { type: 'secrets_required'; data: { envVars: string[]; taskId: string } }
+  | { type: 'analysis_complete'; data: { fileCount: number; methodCount: number } };
 
 export type NovaEventType = NovaEvent['type'];
 

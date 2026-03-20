@@ -2,6 +2,8 @@ export interface NovaConfig {
   project: {
     devCommand: string;
     port: number;
+    frontend?: string;
+    backends?: string[];
   };
   models: {
     fast: string;
@@ -21,6 +23,12 @@ export interface NovaConfig {
     enabled: boolean;
     engine: 'web' | 'whisper';
   };
+  telemetry: {
+    enabled: boolean;
+  };
+  license?: {
+    key?: string;
+  };
 }
 
 export const DEFAULT_CONFIG: NovaConfig = {
@@ -29,4 +37,5 @@ export const DEFAULT_CONFIG: NovaConfig = {
   apiKeys: { provider: 'openrouter' },
   behavior: { autoCommit: false, branchPrefix: 'nova/', passiveSuggestions: true },
   voice: { enabled: true, engine: 'web' },
+  telemetry: { enabled: true },
 };

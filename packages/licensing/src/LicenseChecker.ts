@@ -1,7 +1,7 @@
-import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { ILicenseChecker } from '@nova-architect/core';
 import type { LicenseStatus, NovaConfig } from '@nova-architect/core';
+import { TeamDetector } from './TeamDetector.js';
 
 const FREE_DEV_LIMIT = 3;
 const KEY_PATTERN = /^NOVA-([A-Z2-7]+)-([a-f0-9]{4})$/;
@@ -17,37 +17,18 @@ function validateKey(key: string): boolean {
   return computeChecksum(body) === checksum;
 }
 
-function countGitAuthors(projectPath: string): Promise<number> {
-  return new Promise((resolve) => {
-    execFile(
-      'git',
-      ['log', '--format=%ae'],
-      { cwd: projectPath },
-      (error, stdout) => {
-        if (error) {
-          resolve(1);
-          return;
-        }
-        const emails = stdout
-          .trim()
-          .split('\n')
-          .filter((line) => line.length > 0);
-        const unique = new Set(emails);
-        resolve(unique.size === 0 ? 1 : unique.size);
-      },
-    );
-  });
-}
-
 export class LicenseChecker implements ILicenseChecker {
+  private teamDetector = new TeamDetector();
+
   async check(projectPath: string, _config: NovaConfig): Promise<LicenseStatus> {
-    const devCount = await countGitAuthors(projectPath);
+    const teamInfo = await this.teamDetector.detect(projectPath);
+    const devCount = teamInfo.devCount;
 
     if (devCount <= FREE_DEV_LIMIT) {
       return { valid: true, tier: 'free', devCount };
     }
 
-    const key = process.env['NOVA_LICENSE_KEY'] ?? '';
+    const key = _config.license?.key ?? process.env['NOVA_LICENSE_KEY'] ?? '';
 
     if (!key) {
       return {

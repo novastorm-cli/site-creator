@@ -42,9 +42,26 @@ export interface IVoiceCapture {
 
   /**
    * Register callback for transcription results.
-   * @param handler - receives { text: string, isFinal: boolean }
+   * @param handler - receives { text: string, isFinal: boolean, timestamp: number }
    */
-  onTranscript(handler: (result: { text: string; isFinal: boolean }) => void): void;
+  onTranscript(handler: (result: { text: string; isFinal: boolean; timestamp: number }) => void): void;
+}
+
+export interface CursorPoint {
+  x: number;
+  y: number;
+  timestamp: number;
+}
+
+export interface ICursorTracker {
+  start(): void;
+  stop(): void;
+  isTracking(): boolean;
+  getTrail(): CursorPoint[];
+  getPointAtTime(ts: number): CursorPoint | null;
+  getElementAtTime(ts: number): Element | null;
+  onDwell(handler: (element: Element, point: CursorPoint) => void): void;
+  clear(): void;
 }
 
 export interface IConsoleCapture {

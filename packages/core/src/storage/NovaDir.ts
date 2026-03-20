@@ -2,15 +2,18 @@ import { mkdir, rm, readFile, writeFile, access } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { INovaDir } from '../contracts/IStorage.js';
+import { DEFAULT_AGENT_PROMPTS } from './agentPrompts.js';
 
 const NOVA_DIR = '.nova';
 
-const SUBDIRS = ['recipes', 'history', 'cache'] as const;
+const SUBDIRS = ['recipes', 'history', 'cache', 'agents'] as const;
 
 const INITIAL_FILES: Record<string, string> = {
   'config.toml': '',
   'graph.json': '[]',
   'context.md': '',
+  'analysis.json': '{}',
+  'embeddings.json': '[]',
 };
 
 export class NovaDir implements INovaDir {
@@ -29,6 +32,17 @@ export class NovaDir implements INovaDir {
         await access(filePath);
       } catch {
         await writeFile(filePath, content, 'utf-8');
+      }
+    }
+
+    // Write default agent prompts (idempotent — don't overwrite existing)
+    const agentsDir = join(novaPath, 'agents');
+    for (const [name, content] of Object.entries(DEFAULT_AGENT_PROMPTS)) {
+      const agentFilePath = join(agentsDir, `${name}.md`);
+      try {
+        await access(agentFilePath);
+      } catch {
+        await writeFile(agentFilePath, content, 'utf-8');
       }
     }
 

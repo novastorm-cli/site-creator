@@ -15,10 +15,10 @@ IIFE Build start
 CLI Target: es2022
 CLI Cleaning output folder
 ESM Build start
-ESM dist/index.js 125.01 KB
-ESM ⚡️ Build success in 73ms
-IIFE dist/nova-overlay.global.js 288.70 KB
-IIFE ⚡️ Build success in 82ms
+ESM dist/index.js 144.42 KB
+ESM ⚡️ Build success in 30ms
+IIFE dist/nova-overlay.global.js 299.47 KB
+IIFE ⚡️ Build success in 35ms
 DTS Build start
-DTS ⚡️ Build success in 1692ms
-DTS dist/index.d.ts 18.01 KB
+DTS ⚡️ Build success in 1421ms
+DTS dist/index.d.ts 21.54 KB

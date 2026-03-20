@@ -40,7 +40,7 @@ export class ProjectIndexer implements IProjectIndexer {
   private projectPath = '';
   private graphStore: GraphStore | null = null;
 
-  async index(projectPath: string): Promise<ProjectMap> {
+  async index(projectPath: string, config?: { frontend?: string; backends?: string[] }): Promise<ProjectMap> {
     this.projectPath = projectPath;
 
     // Ensure .nova directory exists
@@ -59,7 +59,17 @@ export class ProjectIndexer implements IProjectIndexer {
     ]);
 
     // Build dependency graph and file contexts
-    const allFiles = await this.readDirRecursive(projectPath);
+    let allFiles: string[];
+    if (config?.frontend || config?.backends) {
+      // Scan only specified directories
+      const dirs: string[] = [];
+      if (config.frontend) dirs.push(join(projectPath, config.frontend));
+      for (const b of config.backends ?? []) dirs.push(join(projectPath, b));
+      const results = await Promise.all(dirs.map(d => this.readDirRecursive(d)));
+      allFiles = results.flat();
+    } else {
+      allFiles = await this.readDirRecursive(projectPath);
+    }
     const scannableFiles = allFiles.filter((f) => {
       const ext = extname(f);
       return SCANNABLE_EXTENSIONS.has(ext);
@@ -149,6 +159,8 @@ export class ProjectIndexer implements IProjectIndexer {
       dependencies,
       fileContexts,
       compressedContext: '',
+      frontend: config?.frontend,
+      backends: config?.backends,
     };
 
     // Generate compressed context

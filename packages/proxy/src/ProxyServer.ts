@@ -1,4 +1,5 @@
 import http from 'node:http';
+import path from 'node:path';
 import zlib from 'node:zlib';
 import { pipeline } from 'node:stream';
 import fs from 'node:fs';
@@ -11,10 +12,15 @@ export class ProxyServer implements IProxyServer {
   private server: http.Server | null = null;
   private proxy: httpProxy | null = null;
   private running = false;
+  private projectMapApi: { handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> } | null = null;
 
   /** Returns the underlying http.Server (used by WebSocketServer). */
   getHttpServer(): http.Server | null {
     return this.server;
+  }
+
+  setProjectMapApi(api: { handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> }): void {
+    this.projectMapApi = api;
   }
 
   async start(
@@ -126,6 +132,35 @@ export class ProxyServer implements IProxyServer {
     });
 
     this.server = http.createServer((req, res) => {
+      // Serve project map page
+      if (req.url === '/nova-project-map') {
+        const mapPath = path.join(import.meta.dirname, '..', 'static', 'project-map.html');
+        fs.readFile(mapPath, (err, data) => {
+          if (err) {
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('project-map.html not found');
+            return;
+          }
+          res.writeHead(200, {
+            'Content-Type': 'text/html',
+            'Cache-Control': 'no-cache',
+          });
+          res.end(data);
+        });
+        return;
+      }
+
+      // Project map API
+      if (req.url?.startsWith('/nova-api/') && this.projectMapApi) {
+        this.projectMapApi.handleRequest(req, res).catch(() => {
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Internal server error' }));
+          }
+        });
+        return;
+      }
+
       // Serve overlay script
       if (req.url === '/nova-overlay.js') {
         fs.readFile(overlayScriptPath, (err, data) => {

@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import type { IDiffApplier } from '../contracts/IExecutor.js';
+import type { IPathGuard } from '../contracts/IPathGuard.js';
 import { DiffError } from '../contracts/IExecutor.js';
 
 interface Hunk {
@@ -19,6 +20,8 @@ interface HunkLine {
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
 export class DiffApplier implements IDiffApplier {
+  constructor(private readonly pathGuard?: IPathGuard) {}
+
   async apply(filePath: string, diff: string): Promise<void> {
     if (!existsSync(filePath)) {
       throw new DiffError(`File not found: ${filePath}`, filePath);
@@ -41,6 +44,7 @@ export class DiffApplier implements IDiffApplier {
       resultLines = this.applyHunk(resultLines, hunk, filePath);
     }
 
+    await this.pathGuard?.check(filePath);
     await writeFile(filePath, resultLines.join('\n'), 'utf-8');
   }
 

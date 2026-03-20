@@ -62,6 +62,21 @@ async function readTomlFile(filePath: string): Promise<Record<string, unknown>> 
 /**
  * Validate a merged config and throw ConfigError for invalid values.
  */
+function validateRelativePath(value: string, field: string): void {
+  if (value.includes('..')) {
+    throw new ConfigError(
+      `Path traversal not allowed in ${field}: "${value}"`,
+      field,
+    );
+  }
+  if (path.isAbsolute(value)) {
+    throw new ConfigError(
+      `Absolute paths not allowed in ${field}: "${value}". Use a relative path.`,
+      field,
+    );
+  }
+}
+
 function validate(config: NovaConfig): void {
   if (config.project.port < 0 || config.project.port > 65535) {
     throw new ConfigError(
@@ -84,6 +99,35 @@ function validate(config: NovaConfig): void {
       `Invalid voice engine: ${config.voice.engine}. Must be one of: ${validEngines.join(', ')}`,
       'voice.engine',
     );
+  }
+
+  if (typeof config.telemetry.enabled !== 'boolean') {
+    throw new ConfigError(
+      `Invalid telemetry.enabled: must be a boolean.`,
+      'telemetry.enabled',
+    );
+  }
+
+  if (config.project.frontend !== undefined) {
+    validateRelativePath(config.project.frontend, 'project.frontend');
+  }
+
+  if (config.project.backends !== undefined) {
+    if (!Array.isArray(config.project.backends)) {
+      throw new ConfigError(
+        'project.backends must be an array of strings.',
+        'project.backends',
+      );
+    }
+    for (const backend of config.project.backends) {
+      if (typeof backend !== 'string') {
+        throw new ConfigError(
+          'Each entry in project.backends must be a string.',
+          'project.backends',
+        );
+      }
+      validateRelativePath(backend, 'project.backends');
+    }
   }
 }
 
@@ -146,6 +190,14 @@ export class ConfigReader implements IConfigReader {
     const diff = diffFromDefaults(config);
     const tomlString = TOML.stringify(diff as TOML.JsonMap);
     const filePath = path.join(projectPath, NOVA_TOML);
+    await fs.writeFile(filePath, tomlString, 'utf-8');
+  }
+
+  async writeLocal(projectPath: string, config: Partial<NovaConfig>): Promise<void> {
+    const diff = diffFromDefaults(config);
+    const tomlString = TOML.stringify(diff as TOML.JsonMap);
+    const filePath = path.join(projectPath, LOCAL_CONFIG_PATH);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
     await fs.writeFile(filePath, tomlString, 'utf-8');
   }
 

@@ -137,6 +137,36 @@ describe('LicenseChecker', () => {
       expect(status.devCount).toBe(4);
     });
 
+    it('should return valid with company tier when key provided via config', async () => {
+      initRepoWithAuthors(tmpDir, 4);
+
+      const body = 'ABCDEFGHIJKLMNOP';
+      const validKey = makeValidKey(body);
+      const config = makeConfig({ license: { key: validKey } });
+
+      const status = await checker.check(tmpDir, config);
+
+      expect(status.valid).toBe(true);
+      expect(status.tier).toBe('company');
+      expect(status.devCount).toBe(4);
+    });
+
+    it('should prefer config key over env key', async () => {
+      initRepoWithAuthors(tmpDir, 4);
+
+      // Set invalid env key
+      process.env.NOVA_LICENSE_KEY = 'NOVA-INVALID-0000';
+
+      // Set valid config key
+      const body = 'ABCDEFGHIJKLMNOP';
+      const validKey = makeValidKey(body);
+      const config = makeConfig({ license: { key: validKey } });
+
+      const status = await checker.check(tmpDir, config);
+
+      expect(status.valid).toBe(true);
+    });
+
     it('should return invalid when 4 authors and key has bad checksum', async () => {
       initRepoWithAuthors(tmpDir, 4);
 

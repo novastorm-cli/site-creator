@@ -159,10 +159,7 @@ export class TaskPanel {
     // Update phase class
     streamArea.className = `task-stream phase-${phase}`;
 
-    // Append text, keep last ~300 chars to avoid DOM bloat
-    const current = streamArea.textContent ?? '';
-    const updated = current + text;
-    streamArea.textContent = updated.length > 300 ? updated.slice(-300) : updated;
+    streamArea.textContent = text;
 
     // Auto-scroll to bottom
     streamArea.scrollTop = streamArea.scrollHeight;

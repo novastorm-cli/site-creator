@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { resolve, sep } from 'node:path';
 import type { IGitManager } from '../contracts/IGitManager.js';
 import { GitError } from '../contracts/IGitManager.js';
 import type { CommitInfo } from '../models/types.js';
@@ -26,8 +27,14 @@ export class GitManager implements IGitManager {
 
   async commit(message: string, files: string[]): Promise<string> {
     if (files.length > 0) {
+      const cwdResolved = resolve(this.cwd);
       // Add files one by one — skip gitignored files
       for (const file of files) {
+        // Validate file is inside cwd
+        const absFile = resolve(this.cwd, file);
+        if (!absFile.startsWith(cwdResolved + sep) && absFile !== cwdResolved) {
+          throw new GitError(`File "${file}" is outside project root`, 'git add');
+        }
         try {
           await this.run('git', ['add', file]);
         } catch {

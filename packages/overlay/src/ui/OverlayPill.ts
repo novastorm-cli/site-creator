@@ -14,7 +14,9 @@ export class OverlayPill implements IOverlayPill {
   private dropdownVisible = false;
   private quickEditHandler: (() => void) | null = null;
   private multiEditHandler: (() => void) | null = null;
+  private gestureModeHandler: (() => void) | null = null;
   private activeMode: 'none' | 'quickEdit' | 'multiEdit' = 'none';
+  private gestureModeActive = false;
   private currentState: PillState = 'idle';
 
   private isDragging = false;
@@ -53,6 +55,14 @@ export class OverlayPill implements IOverlayPill {
       <button class="dropdown-item" data-mode="multiEdit">
         <span class="dropdown-icon">&#128204;</span> Multi-Edit <span class="shortcut">&#x2325;K</span>
       </button>
+      <button class="dropdown-item" data-mode="projectMap">
+        <span class="dropdown-icon">&#128506;</span> Project Map <span class="shortcut">&#x2325;M</span>
+      </button>
+      <div class="dropdown-divider"></div>
+      <button class="dropdown-item gesture-toggle" data-mode="gestureMode">
+        <span class="dropdown-icon">&#9757;</span> Gesture Mode <span class="shortcut">&#x2325;G</span>
+        <span class="toggle-indicator"></span>
+      </button>
     `;
     this.dropdownEl.addEventListener('click', this.handleDropdownClick.bind(this));
     this.shadow.appendChild(this.dropdownEl);
@@ -72,6 +82,10 @@ export class OverlayPill implements IOverlayPill {
     this.pillEl.addEventListener('click', this.handleClick.bind(this));
 
     container.appendChild(this.host);
+
+    // Load saved gesture mode state
+    const savedGestureMode = localStorage.getItem('nova-gesture-mode') === 'true';
+    this.setGestureModeActive(savedGestureMode);
   }
 
   unmount(): void {
@@ -98,6 +112,23 @@ export class OverlayPill implements IOverlayPill {
 
   onMultiEdit(handler: () => void): void {
     this.multiEditHandler = handler;
+  }
+
+  onGestureMode(handler: () => void): void {
+    this.gestureModeHandler = handler;
+  }
+
+  setGestureModeActive(active: boolean): void {
+    this.gestureModeActive = active;
+    if (!this.dropdownEl) return;
+    const toggle = this.dropdownEl.querySelector('.gesture-toggle .toggle-indicator') as HTMLElement | null;
+    if (toggle) {
+      if (active) {
+        toggle.classList.add('on');
+      } else {
+        toggle.classList.remove('on');
+      }
+    }
   }
 
   setActiveMode(mode: 'none' | 'quickEdit' | 'multiEdit'): void {
@@ -146,6 +177,10 @@ export class OverlayPill implements IOverlayPill {
       this.quickEditHandler?.();
     } else if (mode === 'multiEdit') {
       this.multiEditHandler?.();
+    } else if (mode === 'projectMap') {
+      window.open('/nova-project-map', '_blank');
+    } else if (mode === 'gestureMode') {
+      this.gestureModeHandler?.();
     }
     this.closeDropdown();
   }
@@ -278,6 +313,39 @@ export class OverlayPill implements IOverlayPill {
       .dropdown-item:hover { background: rgba(255,255,255,0.08); }
       .dropdown-item.active { border-left-color: #3b82f6; background: rgba(59,130,246,0.1); }
       .shortcut { margin-left: auto; color: #6b7280; font-size: 11px; }
+      .dropdown-divider {
+        height: 1px;
+        background: rgba(255,255,255,0.08);
+        margin: 4px 0;
+      }
+      .toggle-indicator {
+        width: 28px;
+        height: 16px;
+        border-radius: 8px;
+        background: #4b5563;
+        position: relative;
+        display: inline-block;
+        margin-left: 8px;
+        transition: background 0.2s;
+        flex-shrink: 0;
+      }
+      .toggle-indicator::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #fff;
+        transition: transform 0.2s;
+      }
+      .toggle-indicator.on {
+        background: #10b981;
+      }
+      .toggle-indicator.on::after {
+        transform: translateX(12px);
+      }
     `;
   }
 }

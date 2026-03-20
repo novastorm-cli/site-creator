@@ -2,6 +2,7 @@ import { exec } from 'node:child_process';
 import * as path from 'node:path';
 import chalk from 'chalk';
 import ora from 'ora';
+import { resolve } from 'node:path';
 import {
   NovaEventBus,
   NovaDir,
@@ -13,6 +14,8 @@ import {
   Lane2Executor,
   Lane3Executor,
   GitManager,
+  AgentPromptLoader,
+  PathGuard,
   type ProjectMap,
   type Observation,
   type NovaEvent,
@@ -24,11 +27,13 @@ import {
   ProxyServer,
   WebSocketServer,
 } from '@nova-architect/proxy';
-import { LicenseChecker } from '@nova-architect/licensing';
+import { LicenseChecker, Telemetry, NudgeRenderer } from '@nova-architect/licensing';
 import { ConfigReader } from '../config.js';
 import { NovaLogger } from '../logger.js';
 import { promptAndScaffold } from '../scaffold.js';
 import { ErrorAutoFixer } from '../autofix.js';
+import { NovaChat } from '../chat.js';
+import { handleSettingsCommand } from '../settings.js';
 
 const PROXY_PORT_OFFSET = 1;
 function findOverlayScript(): string {
@@ -81,6 +86,64 @@ export async function startCommand(): Promise<void> {
     );
   } else {
     spinner.succeed(`License OK (${license.tier}, ${license.devCount} dev(s)).`);
+  }
+
+  // ── 2b. Send telemetry ──────────────────────────────────────────────
+  if (config.telemetry.enabled && process.env['NOVA_TELEMETRY'] !== 'false') {
+    const { createHash } = await import('node:crypto');
+    const os = await import('node:os');
+    const { execFile } = await import('node:child_process');
+
+    const mac = Object.values(os.networkInterfaces())
+      .flat()
+      .find((i) => !i?.internal && i?.mac !== '00:00:00:00:00:00')?.mac ?? '';
+    const machineId = createHash('sha256')
+      .update(os.hostname() + os.userInfo().username + mac)
+      .digest('hex');
+
+    let projectHash: string;
+    try {
+      const remoteUrl = await new Promise<string>((resolve, reject) => {
+        execFile('git', ['remote', 'get-url', 'origin'], { cwd }, (err, stdout) => {
+          if (err) reject(err);
+          else resolve(stdout.trim());
+        });
+      });
+      projectHash = createHash('sha256').update(remoteUrl).digest('hex');
+    } catch {
+      projectHash = createHash('sha256').update(cwd).digest('hex');
+    }
+
+    const telemetry = new Telemetry();
+    const cliPkg = await import('../../package.json', { with: { type: 'json' } }).catch(
+      () => ({ default: { version: '0.0.1' } }),
+    );
+
+    telemetry
+      .send({
+        machineId,
+        gitAuthors90d: license.devCount,
+        projectHash,
+        cliVersion: (cliPkg.default as { version: string }).version ?? '0.0.1',
+        os: process.platform,
+        timestamp: new Date().toISOString(),
+        licenseKey: config.license?.key ?? process.env['NOVA_LICENSE_KEY'] ?? null,
+      })
+      .then((response) => {
+        if (response && response.nudgeLevel > 0) {
+          const nudgeRenderer = new NudgeRenderer();
+          const nudgeMessage = nudgeRenderer.render({
+            level: response.nudgeLevel,
+            devCount: license.devCount,
+            tier: license.tier,
+            hasLicense: license.valid && license.tier !== 'free',
+          });
+          if (nudgeMessage) {
+            console.log(chalk.yellow(`\n${nudgeMessage}\n`));
+          }
+        }
+      })
+      .catch(() => {}); // fire-and-forget
   }
 
   // ── 3. Detect stack first (before creating .nova/) ─────────────────
@@ -141,12 +204,73 @@ export async function startCommand(): Promise<void> {
   spinner.start('Indexing project...');
   let projectMap: ProjectMap;
   try {
-    projectMap = await indexer.index(cwd);
+    projectMap = await indexer.index(cwd, { frontend: config.project.frontend, backends: config.project.backends });
   } catch (err) {
     spinner.fail('Failed to index project.');
     throw err;
   }
   spinner.succeed('Project indexed.');
+
+  // ── 4b. Analyze project structure ─────────────────────────────────
+  const { ProjectAnalyzer, RagIndexer, createEmbeddingService } = await import('@nova-architect/core');
+  const { ProjectMapApi } = await import('@nova-architect/proxy');
+
+  const projectAnalyzer = new ProjectAnalyzer();
+  spinner.start('Analyzing project structure...');
+  const analysis = await projectAnalyzer.analyze(cwd, projectMap);
+  spinner.succeed(`Project analyzed: ${analysis.fileCount} files, ${analysis.methods.length} methods.`);
+
+  // ── 4c. RAG indexing ──────────────────────────────────────────────
+  let ragIndexer: InstanceType<typeof RagIndexer> | null = null;
+  try {
+    const { VectorStore } = await import('@nova-architect/core');
+
+    let embeddingProvider: 'openai' | 'ollama' | 'tfidf' = 'tfidf';
+    let embeddingApiKey: string | undefined;
+    let embeddingBaseUrl: string | undefined;
+
+    // 1. Try Ollama first (preferred — local, free, private)
+    try {
+      const res = await fetch('http://127.0.0.1:11434/api/tags');
+      if (res.ok) {
+        embeddingProvider = 'ollama';
+        embeddingBaseUrl = 'http://127.0.0.1:11434';
+      }
+    } catch {
+      // Ollama not running
+    }
+
+    // 2. Fall back to OpenAI if Ollama not available
+    if (embeddingProvider === 'tfidf') {
+      const openaiKey = config.apiKeys.provider === 'openai' ? config.apiKeys.key : process.env.OPENAI_API_KEY;
+      if (openaiKey) {
+        embeddingProvider = 'openai';
+        embeddingApiKey = openaiKey;
+      }
+    }
+
+    // 3. TF-IDF is the final fallback (always works)
+
+    const embeddingService = createEmbeddingService({
+      provider: embeddingProvider,
+      apiKey: embeddingApiKey,
+      baseUrl: embeddingBaseUrl,
+    });
+    const vectorStore = new VectorStore();
+    ragIndexer = new RagIndexer(embeddingService, vectorStore);
+
+    const providerLabel = embeddingProvider === 'openai' ? 'OpenAI' : embeddingProvider === 'ollama' ? 'Ollama' : 'TF-IDF (offline)';
+    spinner.start(`Building RAG index (${providerLabel})...`);
+    await ragIndexer.index(cwd, projectMap);
+    spinner.succeed(`RAG index built: ${vectorStore.getRecordCount()} chunks (${providerLabel}).`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    spinner.warn(`RAG indexing skipped: ${msg}`);
+    ragIndexer = null;
+  }
+
+  // Set up project map API
+  const projectMapApi = new ProjectMapApi();
 
   const proxyPort = devPort + PROXY_PORT_OFFSET;
 
@@ -177,6 +301,24 @@ export async function startCommand(): Promise<void> {
   if (httpServer) {
     wsServer.start(httpServer);
   }
+
+  // ── 6c. Wire project map API to proxy ─────────────────────────────
+  proxyServer.setProjectMapApi(projectMapApi);
+  const { GraphStore: GS, SearchRouter: SR } = await import('@nova-architect/core');
+  const novaPath = novaDir.getPath(cwd);
+  const graphStoreForApi = new GS(novaPath);
+  const searchRouterForApi = new SR(graphStoreForApi);
+  projectMapApi.setGraphStore(graphStoreForApi);
+  projectMapApi.setSearchRouter(searchRouterForApi);
+  projectMapApi.setAnalysis(analysis);
+
+  // Send analysis_complete event to overlay
+  setTimeout(() => {
+    wsServer.sendEvent({
+      type: 'analysis_complete',
+      data: { fileCount: analysis.fileCount, methodCount: analysis.methods.length },
+    } as NovaEvent);
+  }, 2000);
 
   // ── 7. Open browser ────────────────────────────────────────────────
   console.log(chalk.dim('Opening browser...'));
@@ -235,9 +377,14 @@ export async function startCommand(): Promise<void> {
   }
   let executorPool: ExecutorPool | null = null;
   if (llmClient) {
-    const lane1 = new Lane1Executor(cwd);
-    const lane2 = new Lane2Executor(cwd, llmClient, gitManager);
-    executorPool = new ExecutorPool(lane1, lane2, eventBus, llmClient, gitManager, cwd, config.models.fast, config.models.strong);
+    const pathGuard = new PathGuard(cwd);
+    if (config.project.frontend) pathGuard.allow(resolve(cwd, config.project.frontend));
+    for (const b of config.project.backends ?? []) pathGuard.allow(resolve(cwd, b));
+
+    const agentPromptLoader = new AgentPromptLoader();
+    const lane1 = new Lane1Executor(cwd, pathGuard);
+    const lane2 = new Lane2Executor(cwd, llmClient, gitManager, pathGuard);
+    executorPool = new ExecutorPool(lane1, lane2, eventBus, llmClient, gitManager, cwd, config.models.fast, config.models.strong, agentPromptLoader, pathGuard);
   }
 
   // Wire dev server output to auto-fixer for error detection
@@ -523,7 +670,7 @@ export async function startCommand(): Promise<void> {
   console.log(
     chalk.bold.green('\nReady! Click elements or speak to start building.'),
   );
-  console.log(chalk.dim('Press Ctrl+C to stop.\n'));
+  console.log(chalk.dim('Type commands below, or use /help for available commands.\n'));
 
   // ── Startup health check (after overlay is ready) ─────────────────
   // Delayed so overlay WebSocket has time to connect
@@ -567,12 +714,15 @@ export async function startCommand(): Promise<void> {
 
   // ── 9. Handle Ctrl+C ───────────────────────────────────────────────
   let shuttingDown = false;
+  let chat: NovaChat | null = null;
 
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
 
     console.log(chalk.dim('\n\nShutting down Nova...'));
+
+    chat?.stop();
 
     try {
       await proxyServer.stop();
@@ -598,36 +748,112 @@ export async function startCommand(): Promise<void> {
     }
   });
 
-  // Listen for terminal input — Enter confirms pending tasks, 'n' cancels
-  if (process.stdin.isTTY) {
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.setEncoding('utf-8');
-    process.stdin.on('data', (key: string) => {
-      // Ctrl+C
-      if (key === '\u0003') {
-        shutdown().catch(() => process.exit(1));
-        return;
+  // ── 9b. Terminal chat ───────────────────────────────────────────────
+  chat = new NovaChat();
+
+  chat.onCommand(async (cmd) => {
+    switch (cmd.type) {
+      case 'text': {
+        // Create a synthetic observation from terminal text
+        if (!brain) {
+          chat!.log(chalk.yellow('AI not configured. Run /settings apiKeys.provider <provider> to set up.'));
+          return;
+        }
+
+        const observation: Observation = {
+          screenshot: Buffer.alloc(0),
+          transcript: cmd.args,
+          currentUrl: `file://${cwd}`,
+          timestamp: Date.now(),
+        };
+
+        nextAutoExecute = false;
+        lastObservation = observation;
+        logger.logObservation(observation);
+        eventBus.emit({ type: 'observation', data: observation });
+        break;
       }
-      // Enter or 'y' — confirm
-      if ((key === '\r' || key === '\n' || key.toLowerCase() === 'y') && pendingTasks.length > 0) {
-        console.log(chalk.green(`\nConfirmed ${pendingTasks.length} task(s) from terminal. Executing...`));
+
+      case 'confirm': {
+        if (pendingTasks.length === 0) {
+          chat!.log(chalk.dim('No pending tasks to confirm.'));
+          return;
+        }
+        chat!.log(chalk.green(`Confirmed ${pendingTasks.length} task(s). Executing...`));
         wsServer.sendEvent({ type: 'status', data: { message: 'Confirmed! Executing tasks...' } } as NovaEvent);
         for (const task of pendingTasks) {
           eventBus.emit({ type: 'task_created', data: task });
         }
         pendingTasks = [];
-        return;
+        break;
       }
-      // 'n' — cancel
-      if (key.toLowerCase() === 'n' && pendingTasks.length > 0) {
-        console.log(chalk.yellow(`\nCancelled ${pendingTasks.length} task(s) from terminal.`));
+
+      case 'cancel': {
+        if (pendingTasks.length === 0) {
+          chat!.log(chalk.dim('No pending tasks to cancel.'));
+          return;
+        }
+        chat!.log(chalk.yellow(`Cancelled ${pendingTasks.length} task(s).`));
         wsServer.sendEvent({ type: 'status', data: { message: 'Tasks cancelled.' } } as NovaEvent);
         pendingTasks = [];
-        return;
+        break;
       }
-    });
-  }
+
+      case 'settings': {
+        const result = await handleSettingsCommand(cmd.args, config, configReader, cwd);
+        chat!.log(result);
+        break;
+      }
+
+      case 'help': {
+        chat!.log([
+          chalk.bold('\nNova Commands\n'),
+          `  ${chalk.cyan('any text')}        Send as a code change request (like voice in UI)`,
+          `  ${chalk.cyan('/settings')}       View all settings`,
+          `  ${chalk.cyan('/settings k v')}   Change a setting`,
+          `  ${chalk.cyan('/status')}         Show current status`,
+          `  ${chalk.cyan('/map')}            Open project map in browser`,
+          `  ${chalk.cyan('/help')}           Show this help`,
+          `  ${chalk.cyan('y / yes')}         Confirm pending tasks`,
+          `  ${chalk.cyan('n / no')}          Cancel pending tasks`,
+          `  ${chalk.cyan('Ctrl+C')}          Shutdown Nova`,
+          '',
+        ].join('\n'));
+        break;
+      }
+
+      case 'status': {
+        const parts: string[] = [chalk.bold('\nNova Status\n')];
+        parts.push(`  ${chalk.dim('Project:')} ${cwd}`);
+        parts.push(`  ${chalk.dim('Stack:')} ${projectMap.stack.framework} (${projectMap.stack.language})`);
+        parts.push(`  ${chalk.dim('Dev server:')} localhost:${devPort}`);
+        parts.push(`  ${chalk.dim('Proxy:')} localhost:${proxyPort}`);
+        parts.push(`  ${chalk.dim('Overlay clients:')} ${wsServer.getClientCount()}`);
+        parts.push(`  ${chalk.dim('AI:')} ${llmClient ? `${config.apiKeys.provider}` : 'not configured'}`);
+        parts.push(`  ${chalk.dim('RAG:')} ${ragIndexer ? 'active' : 'disabled'}`);
+        parts.push(`  ${chalk.dim('Pending tasks:')} ${pendingTasks.length}`);
+        parts.push('');
+        chat!.log(parts.join('\n'));
+        break;
+      }
+
+      case 'map': {
+        const url = `http://127.0.0.1:${proxyPort}/nova-project-map`;
+        chat!.log(chalk.cyan(`Opening project map: ${url}`));
+        const { exec: execCmd } = await import('node:child_process');
+        if (process.platform === 'darwin') {
+          execCmd(`open "${url}"`);
+        } else if (process.platform === 'win32') {
+          execCmd(`start "${url}"`);
+        } else {
+          execCmd(`xdg-open "${url}"`);
+        }
+        break;
+      }
+    }
+  });
+
+  chat.start();
 
   // Handle Ctrl+C — must be registered BEFORE the keep-alive promise
   process.on('SIGINT', () => {

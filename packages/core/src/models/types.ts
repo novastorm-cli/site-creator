@@ -65,6 +65,8 @@ export interface ProjectMap {
   dependencies: DependencyGraph;
   fileContexts: Map<string, MiniContext>;
   compressedContext: string;
+  frontend?: string;
+  backends?: string[];
 }
 
 // ============================================================
@@ -79,6 +81,21 @@ export interface Observation {
   currentUrl: string;
   consoleErrors?: string[];
   timestamp: number;
+  gestureContext?: {
+    gestures: Array<{
+      type: string;
+      startTime: number;
+      endTime: number;
+      elements: Array<{
+        tagName: string;
+        selector: string;
+        domSnippet: string;
+        role: string;
+      }>;
+      region?: { x: number; y: number; width: number; height: number };
+    }>;
+    summary: string;
+  };
 }
 
 // ============================================================
@@ -161,6 +178,39 @@ export interface LicenseStatus {
   message?: string;
 }
 
+export interface TeamInfo {
+  devCount: number;
+  windowDays: number;
+  botsFiltered: number;
+}
+
+export interface TeamDetectOptions {
+  windowDays?: number;
+}
+
+export interface TelemetryPayload {
+  machineId: string;
+  gitAuthors90d: number;
+  projectHash: string;
+  cliVersion: string;
+  os: string;
+  timestamp: string;
+  licenseKey: string | null;
+}
+
+export type NudgeLevel = 0 | 1 | 2 | 3;
+
+export interface NudgeContext {
+  level: NudgeLevel;
+  devCount: number;
+  tier: LicenseTier;
+  hasLicense: boolean;
+}
+
+export interface TelemetryResponse {
+  nudgeLevel: NudgeLevel;
+}
+
 // ============================================================
 // Search
 // ============================================================
@@ -170,4 +220,47 @@ export interface SearchResult {
   score: number;
   matchType: 'graph' | 'keyword' | 'semantic';
   snippet?: string;
+}
+
+// ============================================================
+// Method extraction & project analysis
+// ============================================================
+
+export type MethodVisibility = 'public' | 'private' | 'protected';
+
+export interface MethodInfo {
+  name: string;
+  filePath: string;
+  className?: string;
+  signature: string;
+  purpose: string;
+  lineStart: number;
+  lineEnd: number;
+  visibility: MethodVisibility;
+  isAsync: boolean;
+}
+
+export interface ProjectAnalysis {
+  frontendSummary: string;
+  backendSummary: string;
+  methods: MethodInfo[];
+  analyzedAt: string;
+  fileCount: number;
+}
+
+// ============================================================
+// RAG / Embeddings
+// ============================================================
+
+export interface EmbeddingRecord {
+  id: string;
+  filePath: string;
+  chunkText: string;
+  embedding: number[];
+  metadata: {
+    type: 'method' | 'imports' | 'types' | 'general';
+    name?: string;
+    lineStart?: number;
+    lineEnd?: number;
+  };
 }

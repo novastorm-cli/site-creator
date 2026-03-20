@@ -86,7 +86,7 @@ export interface IProjectIndexer {
    *
    * @returns complete ProjectMap
    */
-  index(projectPath: string): Promise<ProjectMap>;
+  index(projectPath: string, config?: { frontend?: string; backends?: string[] }): Promise<ProjectMap>;
 
   /**
    * Incrementally update index for changed files.
