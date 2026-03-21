@@ -424,9 +424,7 @@ export async function startCommand(): Promise<void> {
   });
 
   // Wire WebSocket observations into EventBus
-  let nextAutoExecute = false;
-  wsServer.onObservation((observation: Observation, autoExecute?: boolean) => {
-    nextAutoExecute = autoExecute === true;
+  wsServer.onObservation((observation: Observation, _autoExecute?: boolean) => {
     logger.logObservation(observation);
     eventBus.emit({ type: 'observation', data: observation });
   });
@@ -487,38 +485,13 @@ export async function startCommand(): Promise<void> {
 
       wsServer.sendEvent({ type: 'status', data: { message: `AI produced ${tasks.length} task(s)` } } as NovaEvent);
 
-      // Auto-execute mode (from Quick Edit / Multi-Edit) — skip confirmation
-      if (nextAutoExecute) {
-        nextAutoExecute = false;
-        console.log(chalk.green(`Auto-executing ${tasks.length} task(s)...`));
-        wsServer.sendEvent({ type: 'status', data: { message: `Auto-executing ${tasks.length} task(s)...` } } as NovaEvent);
-        wsServer.sendEvent({ type: 'status', data: { message: 'Confirmed! Executing tasks...' } } as NovaEvent);
-        for (const task of tasks) {
-          eventBus.emit({ type: 'task_created', data: task });
-        }
-        return;
+      // Auto-execute tasks immediately (no confirmation needed)
+      console.log(chalk.green(`Auto-executing ${tasks.length} task(s)...`));
+      wsServer.sendEvent({ type: 'status', data: { message: `Auto-executing ${tasks.length} task(s)...` } } as NovaEvent);
+      wsServer.sendEvent({ type: 'status', data: { message: 'Confirmed! Executing tasks...' } } as NovaEvent);
+      for (const task of tasks) {
+        eventBus.emit({ type: 'task_created', data: task });
       }
-
-      // Store as pending — do not execute until confirmed
-      pendingTasks = tasks;
-
-      const taskDescriptions = tasks.map((t, i) => `${i + 1}. ${t.description}`).join('; ');
-      const pendingMessage = `Pending: ${tasks.length} task(s) — ${taskDescriptions}. Say "yes"/"execute" to proceed or "no"/"cancel" to discard.`;
-      console.log(chalk.yellow(`\n${pendingMessage}`));
-      console.log(chalk.dim(`(Waiting for confirmation... ${wsServer.getClientCount()} overlay client(s) connected. Press Y to confirm in terminal)\n`));
-      wsServer.sendEvent({ type: 'status', data: { message: pendingMessage, tasks: tasks.map(t => ({ id: t.id, description: t.description, lane: t.lane })) } } as NovaEvent);
-
-      // Re-send pending event periodically in case overlay missed it
-      const resendPending = () => {
-        if (pendingTasks.length > 0) {
-          wsServer.sendEvent({ type: 'status', data: { message: pendingMessage, tasks: tasks.map(t => ({ id: t.id, description: t.description, lane: t.lane })) } } as NovaEvent);
-        }
-      };
-      setTimeout(resendPending, 3000);
-      setTimeout(resendPending, 8000);
-      setTimeout(() => {
-        resendPending();
-      }, 5000);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Analysis error: ${message}`));
@@ -779,7 +752,6 @@ export async function startCommand(): Promise<void> {
           timestamp: Date.now(),
         };
 
-        nextAutoExecute = false;
         lastObservation = observation;
         logger.logObservation(observation);
         eventBus.emit({ type: 'observation', data: observation });

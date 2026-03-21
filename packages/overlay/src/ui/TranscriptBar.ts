@@ -29,6 +29,7 @@ export class TranscriptBar implements ITranscriptBar {
   private host: HTMLElement | null = null;
   private shadow: ShadowRoot | null = null;
   private inputEl: HTMLInputElement | null = null;
+  private answerInputEl: HTMLInputElement | null = null;
   private barEl: HTMLElement | null = null;
   private micBtn: HTMLElement | null = null;
   private sendBtn: HTMLElement | null = null;
@@ -267,8 +268,9 @@ export class TranscriptBar implements ITranscriptBar {
     this.commandSubmitHandlers.push(handler);
   }
 
-  /** Show confirmation bar above input with message + Execute/Cancel buttons */
-  showConfirmation(message: string): void {
+  /** Show confirmation bar above input with message + Execute/Cancel buttons.
+   *  When `showInput` is true, an input field is shown for the user to type an answer. */
+  showConfirmation(message: string, options?: { showInput?: boolean }): void {
     if (!this.confirmBar) return;
     this.confirmBar.innerHTML = '';
 
@@ -276,12 +278,40 @@ export class TranscriptBar implements ITranscriptBar {
     text.className = 'confirm-text';
     text.textContent = message.length > 120 ? message.slice(0, 120) + '...' : message;
     text.title = message;
+    this.confirmBar.appendChild(text);
+
+    // Optional input field for clarifying questions
+    let answerInput: HTMLInputElement | null = null;
+    if (options?.showInput) {
+      answerInput = document.createElement('input');
+      this.answerInputEl = answerInput;
+      answerInput.className = 'confirm-answer-input';
+      answerInput.type = 'text';
+      answerInput.placeholder = 'Введите ответ...';
+      answerInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          e.stopPropagation();
+          // Copy value to main inputEl so handlers can read it
+          if (this.inputEl && answerInput) {
+            this.inputEl.value = answerInput.value;
+          }
+          this.hideConfirmation();
+          for (const h of this.confirmExecuteHandlers) h();
+        }
+      });
+      this.confirmBar.appendChild(answerInput);
+    }
 
     const execBtn = document.createElement('button');
     execBtn.className = 'confirm-exec-btn';
-    execBtn.textContent = 'Execute';
+    execBtn.textContent = options?.showInput ? 'Send' : 'Execute';
     execBtn.addEventListener('click', (e) => {
       e.stopPropagation();
+      // Copy answer value to main inputEl so handlers can read it
+      if (options?.showInput && this.inputEl && answerInput) {
+        this.inputEl.value = answerInput.value;
+      }
       this.hideConfirmation();
       for (const h of this.confirmExecuteHandlers) h();
     });
@@ -295,15 +325,20 @@ export class TranscriptBar implements ITranscriptBar {
       for (const h of this.confirmCancelHandlers) h();
     });
 
-    this.confirmBar.appendChild(text);
     this.confirmBar.appendChild(execBtn);
     this.confirmBar.appendChild(cancelBtn);
     this.confirmBar.classList.remove('hidden');
+
+    // Focus the answer input after showing
+    if (answerInput) {
+      requestAnimationFrame(() => answerInput?.focus());
+    }
   }
 
   /** Hide confirmation bar */
   hideConfirmation(): void {
     this.confirmBar?.classList.add('hidden');
+    this.answerInputEl = null;
   }
 
   /** Register handler for Execute click */
@@ -314,6 +349,34 @@ export class TranscriptBar implements ITranscriptBar {
   /** Register handler for Cancel click */
   onConfirmCancel(handler: () => void): void {
     this.confirmCancelHandlers.push(handler);
+  }
+
+  /** Show a question with an input field and return the user's answer (or null if cancelled). */
+  askQuestion(question: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      this.showConfirmation(question, { showInput: true });
+
+      const origExecHandlers = [...this.confirmExecuteHandlers];
+      const origCancelHandlers = [...this.confirmCancelHandlers];
+
+      const cleanup = (): void => {
+        this.confirmExecuteHandlers = origExecHandlers;
+        this.confirmCancelHandlers = origCancelHandlers;
+      };
+
+      this.confirmExecuteHandlers = [() => {
+        const answer = this.answerInputEl?.value?.trim() ?? '';
+        this.hideConfirmation();
+        cleanup();
+        resolve(answer || null);
+      }];
+
+      this.confirmCancelHandlers = [() => {
+        this.hideConfirmation();
+        cleanup();
+        resolve(null);
+      }];
+    });
   }
 
   /** Register callback for language change. */
@@ -560,6 +623,23 @@ export class TranscriptBar implements ITranscriptBar {
       .confirm-cancel-btn:hover {
         background: #374151;
         color: #fff;
+      }
+      .confirm-answer-input {
+        flex: 1;
+        background: #2a2a2a;
+        color: #e5e7eb;
+        border: 1px solid #4b5563;
+        border-radius: 6px;
+        padding: 6px 10px;
+        font-size: 13px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        outline: none;
+        min-width: 150px;
+        pointer-events: auto;
+      }
+      .confirm-answer-input:focus {
+        border-color: #3b82f6;
+        box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
       }
       .lang-btn {
         background: #333;

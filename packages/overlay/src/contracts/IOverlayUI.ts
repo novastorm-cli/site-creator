@@ -102,6 +102,7 @@ export interface ITranscriptBar {
   unmount(): void;
   setTranscript(text: string, isFinal: boolean): void;
   setListening(active: boolean): void;
+  askQuestion(question: string): Promise<string | null>;
 }
 
 export interface SuggestionItem {

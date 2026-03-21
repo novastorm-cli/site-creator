@@ -659,35 +659,18 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
           const question = msg.slice('question:'.length).trim();
           activityLog.addEntry(`🤔 AI asks: ${question}`, 'thinking');
 
-          // Show question in transcript bar confirmation area
-          transcriptBar.showConfirmation(`🤔 ${question}`);
-
-          // Override confirm handlers for this question
+          // Show question in transcript bar and await the user's answer
           awaitingSendConfirmation = true;
-          pendingVoiceCommand = ''; // Will be filled by user's answer
+          pendingVoiceCommand = '';
 
-          // The user will type answer in transcript bar input and press Enter/Execute
-          // When confirmed, the answer will be sent as a new observation with the question context
-          const origExecHandlers = [...(transcriptBar as any).confirmExecuteHandlers];
-          const origCancelHandlers = [...(transcriptBar as any).confirmCancelHandlers];
-
-          (transcriptBar as any).confirmExecuteHandlers = [() => {
-            const answer = (transcriptBar as any).inputEl?.value?.trim() ?? '';
+          void transcriptBar.askQuestion(`🤔 ${question}`).then((answer) => {
             awaitingSendConfirmation = false;
-            transcriptBar.hideConfirmation();
-            (transcriptBar as any).confirmExecuteHandlers = origExecHandlers;
-            (transcriptBar as any).confirmCancelHandlers = origCancelHandlers;
             if (answer) {
               void sendObservation(`Answer to question "${question}": ${answer}`);
+            } else {
+              statusToast.show('Question dismissed.', 'info', 2000);
             }
-          }];
-          (transcriptBar as any).confirmCancelHandlers = [() => {
-            awaitingSendConfirmation = false;
-            transcriptBar.hideConfirmation();
-            (transcriptBar as any).confirmExecuteHandlers = origExecHandlers;
-            (transcriptBar as any).confirmCancelHandlers = origCancelHandlers;
-            statusToast.show('Question dismissed.', 'info', 2000);
-          }];
+          });
         } else if (msg.startsWith('Pending:')) {
           // Dismiss "AI is thinking" toast
           if (executingToastId) { statusToast.dismiss(executingToastId); executingToastId = null; }

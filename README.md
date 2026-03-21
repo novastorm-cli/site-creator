@@ -1,0 +1,126 @@
+# Nova Architect
+
+**Ambient Development toolkit — development that happens around you while you use your app.**
+
+Nova Architect observes how you use your application and builds features across the full stack — from UI to database — based on your behavior, voice commands, and visual cues. No IDE switching. No context loss. You stay in your product.
+
+---
+
+## The Problem
+
+AI coding tools accelerate one step: turning a description into code. But writing code was never the real bottleneck — it's only 25-35% of the path from idea to production. The rest is understanding what to build, formulating it, reviewing, integrating.
+
+Every existing approach requires you to **stop using your product and start describing** what you want — in code, in prompts, in specs, in tests.
+
+Nova Architect removes that step entirely. You don't describe. You **use**. The system observes and builds.
+
+## How It Works
+
+```
+You use your app → Nova observes → classifies the task → generates full-stack changes → hot reload
+```
+
+Three simultaneous modes:
+
+- **Passive** — watches your behavior, spots patterns, suggests improvements
+- **Voice** — speak instructions without leaving your app: *"Add a CSV export button here"*
+- **Visual** — click elements, draw areas, point at what needs to change
+
+### Speed Lanes
+
+Not every change needs the same resources:
+
+| Lane | Time | Examples |
+|------|------|----------|
+| Instant | < 2s | CSS, text, colors, spacing |
+| Fast | 10-30s | Single-file changes, new component |
+| Thorough | 1-5 min | Multi-file features, new pages + API + DB |
+| Background | minutes-hours | Refactoring, migrations, optimization |
+
+## Quick Start
+
+```bash
+# Install
+npm install -g nova-architect
+
+# Setup AI provider
+nova setup
+
+# Start in your project directory
+cd my-project
+nova start
+```
+
+Nova auto-detects your stack, starts the dev server, and opens the browser with the overlay.
+
+### Supported Stacks
+
+Nova Architect is stack-agnostic. It scans your project markers (`package.json`, `.csproj`, `docker-compose.yml`, `requirements.txt`, etc.) and adapts:
+
+- Next.js, React, Vue, Svelte, Astro
+- Express, Django, FastAPI, .NET, Rails, Go
+- Any combination: *"Next.js + C# backend"* — works
+
+### AI Providers
+
+```bash
+nova setup
+```
+
+- **Claude CLI** — free with Claude Max/Pro subscription
+- **OpenRouter** — pay-per-token
+- **Ollama** — completely free, runs locally
+
+## Usage
+
+| Action | How |
+|--------|-----|
+| Give instruction | Type in overlay input bar + Enter |
+| Voice command | Mic button → speak → mic button |
+| Edit one element | `Option+I` → click → type → Enter |
+| Edit multiple | `Option+K` → click elements → type → Enter |
+| Confirm tasks | `Y` in terminal or Execute button |
+| Undo last change | Type `undo` in terminal |
+| Open project map | `Option+M` |
+
+## Architecture
+
+```
+packages/
+├── cli/        — Command-line interface (`nova` command)
+├── core/       — Project analysis, knowledge graph, task orchestration
+├── overlay/    — Browser overlay (transcript bar, visual selection, voice input)
+├── proxy/      — HTTP/WebSocket proxy between dev server and browser
+└── licensing/  — License validation and developer counting
+```
+
+## Documentation
+
+- [Quick Start](docs/QUICKSTART.md)
+- [User Guide](docs/USER_GUIDE.md)
+- [Configuration](docs/CONFIGURATION.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [How It Works](docs/HOW_IT_WORKS.md)
+- [Voice Guide](docs/VOICE_GUIDE.md)
+- [Multi-Stack Support](docs/MULTI_STACK.md)
+- [Examples](docs/EXAMPLES.md)
+- [Tips & Tricks](docs/TIPS_AND_TRICKS.md)
+- [FAQ](docs/FAQ.md)
+
+## The Manifesto
+
+Nova Architect implements the **Ambient Development** paradigm — a new approach to software creation where the system continuously observes application usage and builds features across all stack layers based on user behavior, voice commands, and visual cues.
+
+> *"Don't describe. Don't plan. Don't switch context. Just use your product. The system builds around you."*
+
+Read the full [Ambient Development Manifesto](docs/ambient-development-manifesto.md).
+
+## License
+
+Nova Architect is source-available under the [Business Source License 1.1](LICENSE.md).
+
+- **Free** for individuals, teams of 3 or fewer developers, open-source projects, students, and evaluation
+- **Paid license** required for teams of 4+ developers on closed-source projects
+- **Converts to MIT** on March 20, 2029
+
+See [License FAQ](docs/license-faq.md) for details.
