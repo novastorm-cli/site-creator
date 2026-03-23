@@ -4,4 +4,5 @@ dist
 .env
 *.tsbuildinfo
 .turbo/cache/*
-.log.claude/worktrees/
+*.log
+.claude/worktrees/
