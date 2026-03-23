@@ -4,12 +4,24 @@ import type { LicenseStatus, NovaConfig } from '@novastorm-ai/core';
 import { TeamDetector } from './TeamDetector.js';
 
 const FREE_DEV_LIMIT = 3;
-const KEY_PATTERN = /^(NOVA-[A-Z2-7]+-[a-f0-9]{4}|NA-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4})$/;
+const NOVA_KEY_PATTERN = /^NOVA-([A-Z0-9]+)-([a-f0-9]{4})$/;
+const NA_KEY_PATTERN = /^NA-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}$/;
 const VALIDATE_ENDPOINT = 'https://cli-api.novastorm.ai/v1/license/validate';
 const TIMEOUT_MS = 5_000;
 
+function computeChecksum(base32Body: string): string {
+  return createHash('sha256').update(base32Body).digest('hex').slice(0, 4);
+}
+
 function validateKeyFormat(key: string): boolean {
-  return KEY_PATTERN.test(key);
+  // NA-XXXX-XXXX-XXXX-XXXX format (from Stripe webhook)
+  if (NA_KEY_PATTERN.test(key)) return true;
+
+  // NOVA-{BASE32}-{checksum} format — verify checksum
+  const match = NOVA_KEY_PATTERN.exec(key);
+  if (!match) return false;
+  const [, body, checksum] = match;
+  return computeChecksum(body) === checksum;
 }
 
 async function validateKeyOnline(key: string, devCount: number): Promise<{ valid: boolean; tier?: string; maxDevs?: number } | null> {
