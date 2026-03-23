@@ -6,6 +6,7 @@ import type { EventBus } from '../models/events.js';
 import type { TaskItem, ProjectMap, ExecutionResult, LlmClient } from '../models/types.js';
 import type { Lane4Executor } from './Lane4Executor.js';
 import { Lane3Executor } from './Lane3Executor.js';
+import { CommitQueue } from '../git/CommitQueue.js';
 
 export class ExecutorPool implements IExecutorPool {
   private readonly lane3Fast: Lane3Executor | null;
@@ -23,13 +24,15 @@ export class ExecutorPool implements IExecutorPool {
     agentPromptLoader?: IAgentPromptLoader,
     pathGuard?: IPathGuard,
     private readonly lane4?: Lane4Executor,
+    commitQueue?: CommitQueue,
   ) {
     // Lane 1-2 fallbacks use fast model, Lane 3-4 use strong model
+    const sharedQueue = commitQueue ?? (gitManager ? new CommitQueue(gitManager) : undefined);
     this.lane3Fast = (llm && gitManager && projectPath)
-      ? new Lane3Executor(projectPath, llm, gitManager, this.eventBus, 3, fastModel, agentPromptLoader, pathGuard)
+      ? new Lane3Executor(projectPath, llm, gitManager, this.eventBus, 3, fastModel, agentPromptLoader, pathGuard, sharedQueue)
       : null;
     this.lane3Strong = (llm && gitManager && projectPath)
-      ? new Lane3Executor(projectPath, llm, gitManager, this.eventBus, 3, strongModel, agentPromptLoader, pathGuard)
+      ? new Lane3Executor(projectPath, llm, gitManager, this.eventBus, 3, strongModel, agentPromptLoader, pathGuard, sharedQueue)
       : null;
   }
 

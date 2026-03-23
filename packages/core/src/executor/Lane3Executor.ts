@@ -14,6 +14,7 @@ import { CodeFixer } from './CodeFixer.js';
 import { DiffApplier } from './DiffApplier.js';
 import { streamWithEvents } from '../llm/streamWithEvents.js';
 import { EnvDetector } from './EnvDetector.js';
+import { CommitQueue } from '../git/CommitQueue.js';
 
 const SYSTEM_PROMPT = `You are a code generation tool. You output ONLY code. No explanations. No questions. No descriptions.
 
@@ -104,6 +105,7 @@ function buildPrompt(task: TaskItem, projectMap: ProjectMap, existingFiles: Set<
 
 export class Lane3Executor {
   private readonly diffApplier: DiffApplier;
+  private readonly commitQueue: CommitQueue;
 
   constructor(
     private readonly projectPath: string,
@@ -114,8 +116,10 @@ export class Lane3Executor {
     private readonly modelName?: string,
     private readonly agentPromptLoader?: IAgentPromptLoader,
     private readonly pathGuard?: IPathGuard,
+    commitQueue?: CommitQueue,
   ) {
     this.diffApplier = new DiffApplier();
+    this.commitQueue = commitQueue ?? new CommitQueue(this.gitManager);
   }
 
   async execute(task: TaskItem, projectMap: ProjectMap): Promise<ExecutionResult> {
@@ -256,6 +260,7 @@ export class Lane3Executor {
 
       // TESTER/DIRECTOR loop (skip for single-file small changes to save time)
       const skipValidation = fileBlocks.length === 1 && fileBlocks[0].content.length < 3000;
+      const tscSkip = this.shouldSkipTsc(fileBlocks);
       const validator = new CodeValidator(this.projectPath);
       const fixer = new CodeFixer(this.llmClient, this.eventBus);
       let currentBlocks: FileBlock[] = [...fileBlocks];
@@ -263,6 +268,8 @@ export class Lane3Executor {
 
       if (skipValidation) {
         console.log(`[Nova] Tester: skipping validation (small single-file change)`);
+      } else if (tscSkip.skipTsc) {
+        console.log(`[Nova] Tester: skipping tsc (${tscSkip.reason})`);
       }
 
       for (let iteration = 1; !skipValidation && iteration <= this.maxFixIterations; iteration++) {
@@ -271,7 +278,10 @@ export class Lane3Executor {
         this.eventBus?.emit({ type: 'status', data: { message: `Validating code (${iteration}/${this.maxFixIterations})...` } });
 
         try {
-          errors = await validator.validateFiles(currentBlocks);
+          errors = await validator.validateFiles(currentBlocks, {
+            skipTsc: tscSkip.skipTsc,
+            skipImportCheck: tscSkip.skipImportCheck,
+          });
         } catch (validationCrash: unknown) {
           const msg = validationCrash instanceof Error ? validationCrash.message : String(validationCrash);
           console.log(`[Nova] Tester: validation crashed, skipping validation: ${msg}`);
@@ -308,13 +318,13 @@ export class Lane3Executor {
           packageJson: pkgContent,
         });
 
-        // Write fixed files
-        for (const block of fixedBlocks) {
+        // Write fixed files in parallel (each block targets a different path)
+        await Promise.all(fixedBlocks.map(async (block) => {
           const absPath = join(this.projectPath, block.path);
           await this.pathGuard?.check(absPath);
           await mkdir(dirname(absPath), { recursive: true });
           await writeFile(absPath, block.content, 'utf-8');
-        }
+        }));
 
         currentBlocks = fixedBlocks;
       }
@@ -322,9 +332,9 @@ export class Lane3Executor {
       // Collect final file list for commit
       const writtenFiles = currentBlocks.map(b => b.path);
 
-      // Commit all changes (sanitize message for git)
+      // Commit all changes (serialized via queue for parallel safety)
       const safeMsg = `nova: ${task.description.replace(/[\n\r'"\\`$]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 72)}`;
-      const commitHash = await this.gitManager.commit(
+      const commitHash = await this.commitQueue.enqueue(
         safeMsg,
         writtenFiles,
       );
@@ -342,6 +352,44 @@ export class Lane3Executor {
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+
+  /**
+   * Determine whether tsc and/or import checks can be skipped based on file extensions.
+   */
+  private shouldSkipTsc(blocks: FileBlock[]): { skipTsc: boolean; skipImportCheck: boolean; reason: string } {
+    if (blocks.length === 0) {
+      return { skipTsc: false, skipImportCheck: false, reason: '' };
+    }
+
+    const cssExts = new Set(['.css', '.scss', '.less', '.sass']);
+    const nonTsExts = new Set(['.css', '.scss', '.less', '.sass', '.json', '.md', '.html', '.svg']);
+    const tsExts = new Set(['.ts', '.tsx', '.js', '.jsx']);
+
+    const getExt = (path: string): string => {
+      const dot = path.lastIndexOf('.');
+      return dot !== -1 ? path.slice(dot) : '';
+    };
+
+    const exts = blocks.map(b => getExt(b.path));
+
+    // CSS-only changes: skip tsc and import checks
+    if (exts.every(ext => cssExts.has(ext))) {
+      return { skipTsc: true, skipImportCheck: true, reason: 'CSS-only changes' };
+    }
+
+    // Non-TS files only: skip tsc, keep import checks for safety
+    if (exts.every(ext => nonTsExts.has(ext))) {
+      return { skipTsc: true, skipImportCheck: true, reason: 'no TypeScript/JavaScript files' };
+    }
+
+    // Single small TS file: skip tsc, keep import validation
+    const tsBlocks = blocks.filter(b => tsExts.has(getExt(b.path)));
+    if (tsBlocks.length === 1 && tsBlocks[0].content.length < 5000) {
+      return { skipTsc: true, skipImportCheck: false, reason: 'single small TS file' };
+    }
+
+    return { skipTsc: false, skipImportCheck: false, reason: '' };
   }
 
   /**

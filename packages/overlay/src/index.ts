@@ -86,6 +86,18 @@ function boot(): void {
   let executingToastId: string | null = null;
   let totalTasks = 0;
   let completedTasks = 0;
+  let pendingReload = false;
+  let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+  const SILENCE_TIMEOUT_MS = 10_000;
+
+  function scheduleReload(): void {
+    if (!voiceStarted) {
+      setTimeout(() => window.location.reload(), 1500);
+    } else {
+      pendingReload = true;
+      statusToast.show('Changes ready — reload pending (stop mic to apply)', 'info');
+    }
+  }
 
   // Gesture tracking
   const cursorTracker = new CursorTracker();
@@ -193,6 +205,97 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
     }
   }, true);
 
+  // Dead click detection: suggest adding functionality when interactive elements do nothing
+  const deadClickSuggested = new WeakMap<HTMLElement, number>();
+  let deadClickElement: HTMLElement | null = null;
+  const DEAD_CLICK_COOLDOWN_MS = 30_000;
+  const DEAD_CLICK_DELAY_MS = 1500;
+  const DEAD_CLICK_DOM_THRESHOLD = 100;
+  const DEAD_CLICK_SELECTOR = [
+    'button',
+    'a[href="#"]',
+    'a[href=""]',
+    'a:not([href])',
+    '[role="button"]',
+    'input[type="submit"]',
+    'input[type="button"]',
+  ].join(',');
+
+  document.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement;
+
+    // Skip Nova UI elements
+    if (target.closest('#nova-root') || target.closest('[data-nova-pill]') || target.closest('[data-nova-transcript]')) return;
+
+    // Skip when processing, in autofix, or inspector/selector modes are active
+    if (isProcessing || autofixInProgress) return;
+    if (elementInspector.isActive() || multiSelector.isActive()) return;
+
+    // Find the interactive element (target itself or closest ancestor)
+    const interactive = target.closest(DEAD_CLICK_SELECTOR) as HTMLElement | null;
+    if (!interactive) return;
+
+    // Skip if inside Nova root (extra safety)
+    if (interactive.closest('#nova-root')) return;
+
+    // Cooldown: skip if same element was suggested recently
+    const lastSuggested = deadClickSuggested.get(interactive);
+    if (lastSuggested && Date.now() - lastSuggested < DEAD_CLICK_COOLDOWN_MS) return;
+
+    // Snapshot current state
+    const snapshotUrl = window.location.href;
+    const snapshotDomLength = document.body.innerHTML.length;
+    const clickedElement = interactive;
+
+    setTimeout(() => {
+      // Re-check state — user may have started processing in the meantime
+      if (isProcessing || autofixInProgress) return;
+      if (awaitingConfirmation || awaitingSendConfirmation) return;
+      if (voiceStarted) return; // Don't interfere with active voice recording
+
+      // Element may have been removed by React re-render
+      if (!clickedElement.isConnected) return;
+
+      // Check if URL changed
+      if (window.location.href !== snapshotUrl) return;
+
+      // Check if DOM changed significantly
+      const currentDomLength = document.body.innerHTML.length;
+      if (Math.abs(currentDomLength - snapshotDomLength) > DEAD_CLICK_DOM_THRESHOLD) return;
+
+      // Check if a new element appeared (modal, dropdown, tooltip, popover) — check both parent and body
+      const overlaySelector = '[class*="modal"], [class*="dropdown"], [class*="tooltip"], [class*="popover"], [class*="menu"], [role="dialog"], [role="menu"], [role="listbox"], [role="tooltip"]';
+      const nearbyNew = clickedElement.parentElement?.querySelector(overlaySelector)
+        || document.body.querySelector(overlaySelector + ':not([data-nova-pill])');
+      if (nearbyNew) return;
+
+      // Nothing happened — suggest adding functionality
+      deadClickSuggested.set(clickedElement, Date.now());
+      deadClickElement = clickedElement;
+
+      const elementSnapshot = domCapture.captureElement(clickedElement);
+      const instruction = `DEAD CLICK DETECTED — this interactive element does nothing when clicked. Add appropriate functionality to it.
+
+Element snapshot:
+${elementSnapshot}
+
+Current page URL: ${window.location.href}
+
+The user clicked this element and nothing happened. Analyze the element's context (label, surrounding UI, page purpose) and implement the most logical behavior. For example:
+- If it's a navigation link, add proper routing
+- If it's a form submit button, add form handling
+- If it's an action button (delete, save, etc.), implement the action
+- If it's a toggle/dropdown trigger, add the toggle behavior
+
+IMPORTANT: Only modify the minimum code needed. Do not restructure other parts of the page.`;
+
+      // Piggyback on existing confirmation flow via pendingVoiceCommand
+      pendingVoiceCommand = instruction;
+      awaitingSendConfirmation = true;
+      transcriptBar.showConfirmation('Кнопка не работает. Хотите добавить функционал?');
+    }, DEAD_CLICK_DELAY_MS);
+  }, true);
+
   // Watch for removal and re-mount if React or error boundaries nuke the elements
   const overlaySelectors = [
     { attr: 'data-nova-pill', remount: () => { pill.unmount(); pill.mount(novaRoot!); } },
@@ -267,6 +370,48 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
   // Track if user has been recording (to detect mic-off as command end)
   let hasRecordedText = false;
 
+  // Helper: stop mic and trigger send confirmation if text was recorded
+  function stopMic(): void {
+    if (silenceTimer) {
+      clearTimeout(silenceTimer);
+      silenceTimer = null;
+    }
+
+    voiceCapture.stop();
+    voiceStarted = false;
+    pill.setState('idle');
+    transcriptBar.setListening(false);
+    updateCursorTracking();
+
+    if (pendingReload) {
+      pendingReload = false;
+      setTimeout(() => window.location.reload(), 500);
+      return;
+    }
+
+    if (hasRecordedText && lastTranscript.trim().length >= 3) {
+      const text = lastTranscript.trim();
+      pendingVoiceCommand = text;
+      awaitingSendConfirmation = true;
+
+      transcriptBar.showConfirmation(`Send: "${text.slice(0, 80)}"?`);
+    }
+    hasRecordedText = false;
+  }
+
+  // Helper: reset the silence auto-stop timer
+  function resetSilenceTimer(): void {
+    if (silenceTimer) {
+      clearTimeout(silenceTimer);
+      silenceTimer = null;
+    }
+    if (voiceStarted) {
+      silenceTimer = setTimeout(() => {
+        stopMic();
+      }, SILENCE_TIMEOUT_MS);
+    }
+  }
+
   // Mic toggle from TranscriptBar → start/stop VoiceCapture
   transcriptBar.onMicToggle((active: boolean) => {
     if (autofixInProgress) {
@@ -281,21 +426,9 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
       voiceStarted = true;
       pill.setState('listening');
       updateCursorTracking();
+      resetSilenceTimer();
     } else {
-      // Stop recording — if there was text, show send confirmation
-      voiceCapture.stop();
-      voiceStarted = false;
-      pill.setState('idle');
-      updateCursorTracking();
-
-      if (hasRecordedText && lastTranscript.trim().length >= 3) {
-        const text = lastTranscript.trim();
-        pendingVoiceCommand = text;
-        awaitingSendConfirmation = true;
-
-        transcriptBar.showConfirmation(`Send: "${text.slice(0, 80)}"?`);
-      }
-      hasRecordedText = false;
+      stopMic();
     }
   });
 
@@ -319,6 +452,12 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
       awaitingSendConfirmation = false;
       const cmd = pendingVoiceCommand;
       pendingVoiceCommand = '';
+      // Dead click confirmation: set element context and auto-execute
+      if (deadClickElement) {
+        selectedElement = deadClickElement;
+        autoExecute = true;
+        deadClickElement = null;
+      }
       void sendObservation(cmd);
     } else if (awaitingConfirmation) {
       awaitingConfirmation = false;
@@ -333,6 +472,7 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
     if (awaitingSendConfirmation) {
       awaitingSendConfirmation = false;
       pendingVoiceCommand = '';
+      deadClickElement = null;
       statusToast.show('Command discarded.', 'info', 2000);
     } else if (awaitingConfirmation) {
       awaitingConfirmation = false;
@@ -422,6 +562,9 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
   // Collect voice transcripts — update transcript bar, track text
   voiceCapture.onTranscript((result) => {
     transcriptBar.setTranscript(result.text, result.isFinal);
+
+    // Any speech activity resets the silence auto-stop timer
+    resetSilenceTimer();
 
     // Feed transcripts to temporal correlator for gesture correlation
     if (gestureModeEnabled) {
@@ -575,7 +718,7 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
           totalTasks = 0;
           completedTasks = 0;
           // Reload page to pick up changes via hot reload
-          setTimeout(() => window.location.reload(), 1500);
+          scheduleReload();
         }
         break;
       case 'task_failed':
@@ -702,7 +845,7 @@ IMPORTANT: Only modify the minimum code needed. If the element is inside a compo
           pill.setState('idle');
           statusToast.show('Build fix applied! Reloading...', 'success', 3000);
           // Reload page after short delay to pick up hot-reload changes
-          setTimeout(() => window.location.reload(), 1500);
+          scheduleReload();
         } else if (msg === 'autofix_failed') {
           autofixInProgress = false;
           if (autofixToastId) {

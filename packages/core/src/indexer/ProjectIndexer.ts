@@ -100,10 +100,22 @@ export class ProjectIndexer implements IProjectIndexer {
     const fileContexts = new Map<string, MiniContext>();
     const models: ModelInfo[] = [];
 
-    for (const absPath of scannableFiles) {
+    // Read all files in parallel (batched to avoid fd exhaustion)
+    const BATCH_SIZE = 50;
+    const fileContents = new Map<string, string>();
+    for (let i = 0; i < scannableFiles.length; i += BATCH_SIZE) {
+      const batch = scannableFiles.slice(i, i + BATCH_SIZE);
+      const results = await Promise.all(batch.map(async (absPath) => {
+        const content = await this.readFileSafe(absPath);
+        return [absPath, content] as const;
+      }));
+      for (const [absPath, content] of results) {
+        if (content) fileContents.set(absPath, content);
+      }
+    }
+
+    for (const [absPath, content] of fileContents) {
       const rel = this.toPosix(relative(projectPath, absPath));
-      const content = await this.readFileSafe(absPath);
-      if (!content) continue;
 
       // Extract imports
       const imports = this.extractImports(content);
@@ -143,21 +155,23 @@ export class ProjectIndexer implements IProjectIndexer {
     }
 
     // Second pass: populate importedTypes in fileContexts
+    // Pre-compute type definitions cache to avoid running the same regex per file repeatedly
+    const TYPE_DEF_REGEX = /export\s+(?:interface|type)\s+\w+[^}]*}/g;
+    const typeDefsCache = new Map<string, string[]>();
+    for (const [filePath, ctx] of fileContexts) {
+      const matches = ctx.content.match(TYPE_DEF_REGEX);
+      if (matches) typeDefsCache.set(filePath, matches);
+    }
+
     for (const [filePath, ctx] of fileContexts) {
       const node = dependencies.get(filePath);
       if (!node) continue;
 
       const importedTypes: string[] = [];
       for (const imp of node.imports) {
-        const importedCtx = fileContexts.get(imp);
-        if (!importedCtx) continue;
-
-        // Extract type/interface definitions from imported file
-        const typeMatches = importedCtx.content.match(
-          /export\s+(?:interface|type)\s+\w+[^}]*}/g,
-        );
-        if (typeMatches) {
-          importedTypes.push(...typeMatches);
+        const cached = typeDefsCache.get(imp);
+        if (cached) {
+          importedTypes.push(...cached);
         }
       }
 

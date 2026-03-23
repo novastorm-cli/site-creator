@@ -14,29 +14,48 @@ export interface ValidationError {
 }
 
 export class CodeValidator {
+  private installedDepsCache: Set<string> | null = null;
+
   constructor(private readonly projectPath: string) {}
 
   /**
    * Validate generated files. Returns only errors in the specified files (filters out pre-existing project errors).
    */
-  async validateFiles(files: Array<{ path: string; content: string }>): Promise<ValidationError[]> {
+  async validateFiles(
+    files: Array<{ path: string; content: string }>,
+    options?: { skipTsc?: boolean; skipImportCheck?: boolean },
+  ): Promise<ValidationError[]> {
     const errors: ValidationError[] = [];
     const generatedPaths = new Set(files.map(f => f.path));
 
     // 1. TypeScript check
-    const tscErrors = await this.runTsc(generatedPaths);
-    errors.push(...tscErrors);
-
-    // 2. Import resolution check
-    for (const file of files) {
-      const importErrors = await this.checkImports(file.path, file.content);
-      errors.push(...importErrors);
+    if (!options?.skipTsc) {
+      const tscErrors = await this.runTsc(generatedPaths);
+      errors.push(...tscErrors);
     }
 
-    // 3. Relative import check
-    for (const file of files) {
+    // 2. Import resolution check + 3. Relative import check (parallel)
+    // Pre-load installed deps once for all files
+    if (!options?.skipImportCheck) {
+      await this.loadInstalledDeps();
+    }
+
+    const fileErrors = await Promise.all(files.map(async (file) => {
+      const result: ValidationError[] = [];
+
+      if (!options?.skipImportCheck) {
+        const importErrors = this.checkImportsSync(file.path, file.content);
+        result.push(...importErrors);
+      }
+
       const relErrors = this.checkRelativeImports(file.path, file.content, generatedPaths);
-      errors.push(...relErrors);
+      result.push(...relErrors);
+
+      return result;
+    }));
+
+    for (const fileErrs of fileErrors) {
+      errors.push(...fileErrs);
     }
 
     return errors;
@@ -107,25 +126,30 @@ export class CodeValidator {
     return errors;
   }
 
-  private async checkImports(filePath: string, content: string): Promise<ValidationError[]> {
-    const errors: ValidationError[] = [];
-
-    // Read package.json for available deps
-    let installedDeps = new Set<string>();
+  /**
+   * Load and cache installed dependencies from package.json.
+   * Called once per validateFiles invocation instead of once per file.
+   */
+  private async loadInstalledDeps(): Promise<void> {
+    if (this.installedDepsCache) return;
     try {
       const pkgRaw = await readFile(join(this.projectPath, 'package.json'), 'utf-8');
       const pkg = JSON.parse(pkgRaw) as {
         dependencies?: Record<string, string>;
         devDependencies?: Record<string, string>;
       };
-      installedDeps = new Set([
+      this.installedDepsCache = new Set([
         ...Object.keys(pkg.dependencies ?? {}),
         ...Object.keys(pkg.devDependencies ?? {}),
       ]);
     } catch {
-      // No package.json — skip import check
-      return [];
+      this.installedDepsCache = new Set();
     }
+  }
+
+  private checkImportsSync(filePath: string, content: string): ValidationError[] {
+    const errors: ValidationError[] = [];
+    const installedDeps = this.installedDepsCache ?? new Set<string>();
 
     const safePackages = new Set([
       'react', 'react-dom', 'next', 'next/link', 'next/image',

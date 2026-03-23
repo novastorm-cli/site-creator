@@ -18,10 +18,12 @@ import {
   AgentPromptLoader,
   PathGuard,
   ManifestStore,
+  CommitQueue,
   type ProjectMap,
   type Observation,
   type NovaEvent,
   type TaskItem,
+  type ExecutionResult,
   EnvDetector,
 } from '@novastorm-ai/core';
 import {
@@ -38,6 +40,31 @@ import { NovaChat } from '../chat.js';
 import { handleSettingsCommand } from '../settings.js';
 
 const PROXY_PORT_OFFSET = 1;
+const MAX_TASK_CONCURRENCY = 3;
+
+async function runWithConcurrency<T>(
+  tasks: (() => Promise<T>)[],
+  maxConcurrency: number,
+): Promise<T[]> {
+  const results: T[] = new Array(tasks.length);
+  const executing = new Set<Promise<void>>();
+
+  for (let i = 0; i < tasks.length; i++) {
+    const index = i;
+    const p = tasks[index]().then((result) => {
+      results[index] = result;
+      executing.delete(p);
+    });
+    executing.add(p);
+
+    if (executing.size >= maxConcurrency) {
+      await Promise.race(executing);
+    }
+  }
+
+  await Promise.all(executing);
+  return results;
+}
 
 function isPortInUse(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -435,6 +462,7 @@ export async function startCommand(): Promise<void> {
     // May already be on a nova branch, that's ok
   }
   let executorPool: ExecutorPool | null = null;
+  const commitQueue = new CommitQueue(gitManager);
   if (llmClient) {
     const pathGuard = new PathGuard(cwd);
     if (config.project.frontend) pathGuard.allow(resolve(cwd, config.project.frontend));
@@ -449,14 +477,14 @@ export async function startCommand(): Promise<void> {
 
     const agentPromptLoader = new AgentPromptLoader();
     const lane1 = new Lane1Executor(cwd, pathGuard);
-    const lane2 = new Lane2Executor(cwd, llmClient, gitManager, pathGuard);
-    executorPool = new ExecutorPool(lane1, lane2, eventBus, llmClient, gitManager, cwd, config.models.fast, config.models.strong, agentPromptLoader, pathGuard);
+    const lane2 = new Lane2Executor(cwd, llmClient, gitManager, pathGuard, commitQueue);
+    executorPool = new ExecutorPool(lane1, lane2, eventBus, llmClient, gitManager, cwd, config.models.fast, config.models.strong, agentPromptLoader, pathGuard, undefined, commitQueue);
   }
 
   // Wire dev server output to auto-fixer for error detection
   let autoFixer: ErrorAutoFixer | null = null;
   if (llmClient) {
-    autoFixer = new ErrorAutoFixer(cwd, llmClient, gitManager, eventBus, wsServer, projectMap);
+    autoFixer = new ErrorAutoFixer(cwd, llmClient, gitManager, eventBus, wsServer, projectMap, commitQueue);
   }
   devServer.onOutput((output: string) => {
     autoFixer?.handleOutput(output);
@@ -543,9 +571,7 @@ export async function startCommand(): Promise<void> {
       console.log(chalk.green(`Auto-executing ${tasks.length} task(s)...`));
       wsServer.sendEvent({ type: 'status', data: { message: `Auto-executing ${tasks.length} task(s)...` } } as NovaEvent);
       wsServer.sendEvent({ type: 'status', data: { message: 'Confirmed! Executing tasks...' } } as NovaEvent);
-      for (const task of tasks) {
-        eventBus.emit({ type: 'task_created', data: task });
-      }
+      executeTasks(tasks);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`Analysis error: ${message}`));
@@ -561,10 +587,9 @@ export async function startCommand(): Promise<void> {
     }
     console.log(chalk.green(`Confirmed ${pendingTasks.length} task(s). Executing...`));
     wsServer.sendEvent({ type: 'status', data: { message: 'Confirmed! Executing tasks...' } } as NovaEvent);
-    for (const task of pendingTasks) {
-      eventBus.emit({ type: 'task_created', data: task });
-    }
+    const tasksToRun = [...pendingTasks];
     pendingTasks = [];
+    executeTasks(tasksToRun);
   });
 
   wsServer.onCancel(() => {
@@ -618,20 +643,36 @@ export async function startCommand(): Promise<void> {
     }
   });
 
-  // Forward task events to overlay clients and execute
-  eventBus.on('task_created', async (event) => {
+  // Execute a batch of tasks in parallel with concurrency limit
+  function executeTasks(tasks: TaskItem[]): void {
+    // Emit task_created events for UI/logging
+    for (const task of tasks) {
+      eventBus.emit({ type: 'task_created', data: task });
+    }
+
+    if (!executorPool) return;
+
+    const pool = executorPool;
+    const taskFns = tasks.map((task) => async () => {
+      try {
+        return await pool.execute(task, projectMap);
+      } catch {
+        // Error already emitted by executor pool
+        return { success: false, taskId: task.id, error: 'Execution failed' } as ExecutionResult;
+      }
+    });
+
+    runWithConcurrency(taskFns, MAX_TASK_CONCURRENCY).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(chalk.red(`Task batch error: ${message}`));
+    });
+  }
+
+  // Forward task events to overlay clients
+  eventBus.on('task_created', (event) => {
     taskMap.set(event.data.id, event.data);
     logger.logTaskStarted(event.data);
     wsServer.sendEvent(event as NovaEvent);
-
-    // Execute the task
-    if (executorPool) {
-      try {
-        await executorPool.execute(event.data, projectMap);
-      } catch {
-        // error already emitted by executor pool
-      }
-    }
   });
 
   eventBus.on('task_completed', (event) => {
@@ -676,7 +717,7 @@ export async function startCommand(): Promise<void> {
       } catch {
         // Health check failed silently
       }
-    }, 3000);
+    }, 1500);
   });
 
   eventBus.on('task_failed', (event) => {

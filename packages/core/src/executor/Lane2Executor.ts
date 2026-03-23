@@ -3,6 +3,7 @@ import type { ILane2Executor } from '../contracts/IExecutor.js';
 import type { IGitManager } from '../contracts/IGitManager.js';
 import type { IPathGuard } from '../contracts/IPathGuard.js';
 import type { TaskItem, ProjectMap, ExecutionResult, LlmClient, MiniContext } from '../models/types.js';
+import { CommitQueue } from '../git/CommitQueue.js';
 import { DiffApplier } from './DiffApplier.js';
 import { addLineNumbers } from './fileBlocks.js';
 
@@ -54,14 +55,17 @@ function extractDiff(response: string): string {
 
 export class Lane2Executor implements ILane2Executor {
   private readonly diffApplier: DiffApplier;
+  private readonly commitQueue: CommitQueue;
 
   constructor(
     private readonly projectPath: string,
     private readonly llmClient: LlmClient,
     private readonly gitManager: IGitManager,
     private readonly pathGuard?: IPathGuard,
+    commitQueue?: CommitQueue,
   ) {
     this.diffApplier = new DiffApplier();
+    this.commitQueue = commitQueue ?? new CommitQueue(this.gitManager);
   }
 
   async execute(task: TaskItem, projectMap: ProjectMap): Promise<ExecutionResult> {
@@ -104,8 +108,8 @@ export class Lane2Executor implements ILane2Executor {
       await this.pathGuard?.check(absPath);
       await this.diffApplier.apply(absPath, diff);
 
-      // Commit changes
-      const commitHash = await this.gitManager.commit(
+      // Commit changes (serialized via queue for parallel safety)
+      const commitHash = await this.commitQueue.enqueue(
         `nova: ${task.description}`,
         [targetFile],
       );

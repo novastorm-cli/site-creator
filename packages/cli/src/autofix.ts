@@ -6,7 +6,7 @@ import type {
   IGitManager,
   EventBus,
 } from '@novastorm-ai/core';
-import { Lane3Executor } from '@novastorm-ai/core';
+import { Lane3Executor, CommitQueue } from '@novastorm-ai/core';
 import type { WebSocketServer } from '@novastorm-ai/proxy';
 
 // Patterns that indicate fixable compilation errors
@@ -38,7 +38,7 @@ export class ErrorAutoFixer {
   private isFixing = false;
   private errorBuffer = '';
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly DEBOUNCE_MS = 2000;
+  private readonly DEBOUNCE_MS = 1000;
   private fixAttempts = 0;
   private readonly MAX_FIX_ATTEMPTS = 3;
   private lastErrorSignature = '';
@@ -51,6 +51,7 @@ export class ErrorAutoFixer {
     private readonly eventBus: EventBus,
     private readonly wsServer: WebSocketServer,
     private readonly projectMap: ProjectMap,
+    private readonly commitQueue?: CommitQueue,
   ) {}
 
   /**
@@ -177,6 +178,11 @@ Error: ${errorOutput.slice(0, 300)}`;
       this.llmClient,
       this.gitManager,
       this.eventBus,
+      1,  // maxFixIterations — single pass for auto-fix
+      undefined, // modelName
+      undefined, // agentPromptLoader
+      undefined, // pathGuard
+      this.commitQueue,
     );
 
     console.log(chalk.cyan('[Nova] Auto-fixing image errors...'));
@@ -227,6 +233,11 @@ Error: ${errorOutput.slice(0, 300)}`;
       this.llmClient,
       this.gitManager,
       this.eventBus,
+      1,  // maxFixIterations — single pass for auto-fix
+      undefined, // modelName
+      undefined, // agentPromptLoader
+      undefined, // pathGuard
+      this.commitQueue,
     );
 
     console.log(chalk.cyan('[Nova] Auto-fixing compilation error...'));
