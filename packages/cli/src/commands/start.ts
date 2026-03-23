@@ -1,9 +1,13 @@
 import { exec } from 'node:child_process';
+import { existsSync, readdirSync } from 'node:fs';
+import { writeFile, mkdir } from 'node:fs/promises';
 import * as net from 'node:net';
 import * as path from 'node:path';
 import chalk from 'chalk';
 import ora from 'ora';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
+import { input } from '@inquirer/prompts';
+import TOML from '@iarna/toml';
 import {
   NovaEventBus,
   NovaDir,
@@ -25,6 +29,7 @@ import {
   type TaskItem,
   type ExecutionResult,
   EnvDetector,
+  StackDetector,
 } from '@novastorm-ai/core';
 import {
   DevServerRunner,
@@ -194,11 +199,30 @@ export async function startCommand(): Promise<void> {
       .catch(() => {}); // fire-and-forget
   }
 
+  // ── 2c. Set up LLM provider (early — before scanning) ──────────────
+  if (!config.apiKeys.key && config.apiKeys.provider !== 'ollama' && config.apiKeys.provider !== 'claude-cli') {
+    console.log(chalk.yellow('\nNo API key configured. Running setup...\n'));
+    const { runSetup } = await import('../setup.js');
+    await runSetup(cwd);
+    // Re-read config after setup
+    const updatedConfig = await configReader.read(cwd);
+    config.apiKeys = updatedConfig.apiKeys;
+  }
+
+  const providerFactory = new ProviderFactory();
+  let llmClient;
+  try {
+    llmClient = providerFactory.create(config.apiKeys.provider, config.apiKeys.key);
+  } catch (err) {
+    console.log(chalk.yellow('\nAI provider not configured. Nova is running without AI analysis.'));
+    console.log(chalk.dim('Run "nova setup" to configure your API key.\n'));
+    llmClient = null;
+  }
+  const brain = llmClient ? new Brain(llmClient, eventBus) : null;
+
   // ── 3. Detect stack first (before creating .nova/) ─────────────────
   spinner.start('Detecting project...');
 
-  // Quick stack detection without full indexing
-  const { StackDetector } = await import('@novastorm-ai/core');
   const stackDetector = new StackDetector();
   let stack = await stackDetector.detectStack(cwd);
   let detectedDevCommand = await stackDetector.detectDevCommand(stack, cwd);
@@ -206,45 +230,110 @@ export async function startCommand(): Promise<void> {
 
   spinner.succeed(`Detecting project... ${chalk.cyan(stack.framework || 'unknown')} + ${chalk.cyan(stack.typescript ? 'TypeScript' : stack.language || 'unknown')}`);
 
+  if (stack.framework !== 'unknown') {
+    console.log(chalk.green(`  Detected: ${stack.framework} + ${stack.language}`));
+  } else {
+    const dirFiles = readdirSync(cwd).slice(0, 10).join(', ');
+    console.log(chalk.yellow(`  Could not detect framework. Files in directory: ${dirFiles}`));
+  }
+
   // Resolve dev command: prefer config, fall back to auto-detected
   let devCommand = config.project.devCommand || detectedDevCommand;
   let devPort = config.project.port || detectedPort;
 
   // ── 3b. Scaffold if no project found ──────────────────────────────
   if (!devCommand) {
-    // Clean up .nova/ if it was created prematurely (scaffolders like create-next-app complain about non-empty dirs)
-    if (novaDir.exists(cwd)) {
-      await novaDir.clean(cwd);
-    }
+    // Check if directory already has project files
+    const projectMarkers = ['package.json', 'requirements.txt', 'go.mod', 'Cargo.toml', 'pom.xml', 'build.gradle', 'composer.json', 'Gemfile'];
+    const hasProjectFiles = projectMarkers.some(f => existsSync(join(cwd, f)))
+      || readdirSync(cwd).some(f => f.endsWith('.sln') || f.endsWith('.csproj'));
 
-    const scaffoldInfo = await promptAndScaffold(cwd);
+    if (hasProjectFiles) {
+      // Existing project but dev command unknown — ask user
+      // Suggest a default based on detected stack
+      const defaultCmd = stack.framework === 'dotnet' ? 'dotnet run'
+        : stack.framework === 'django' ? 'python manage.py runserver'
+        : stack.framework === 'fastapi' ? 'uvicorn main:app --reload'
+        : stack.framework === 'flask' ? 'flask run'
+        : stack.framework === 'rails' ? 'bin/rails server'
+        : stack.framework === 'laravel' ? 'php artisan serve'
+        : stack.framework === 'spring-boot' ? './mvnw spring-boot:run'
+        : existsSync(join(cwd, 'package.json')) ? 'npm run dev'
+        : '';
 
-    if (!scaffoldInfo.scaffolded) {
-      // User chose 'empty' — nothing more to do
-      process.exit(0);
-    }
+      const stackLabel = stack.framework !== 'unknown'
+        ? ` (${chalk.cyan(stack.framework)} detected)`
+        : '';
 
-    // Apply frontend/backends from scaffold to config (for multi-stack projects)
-    if (scaffoldInfo.frontend) config.project.frontend = scaffoldInfo.frontend;
-    if (scaffoldInfo.backends) config.project.backends = scaffoldInfo.backends;
+      let devCmd: string;
+      try {
+        devCmd = await input({
+          message: `Dev command not found${stackLabel}. Enter your dev command:`,
+          default: defaultCmd || undefined,
+        });
+      } catch {
+        console.log('\nCancelled.');
+        process.exit(0);
+      }
 
-    // Re-detect stack after scaffolding
-    spinner.start('Re-detecting project...');
-    stack = await stackDetector.detectStack(cwd);
-    detectedDevCommand = await stackDetector.detectDevCommand(stack, cwd);
-    detectedPort = await stackDetector.detectPort(stack, cwd);
-    spinner.succeed(
-      `Detecting project... ${chalk.cyan(stack.framework || 'unknown')} + ${chalk.cyan(stack.typescript ? 'TypeScript' : stack.language || 'unknown')}`,
-    );
+      if (devCmd && devCmd.trim()) {
+        devCommand = devCmd.trim();
+        // Save to nova.toml for future runs
+        try {
+          const novaTomlPath = join(cwd, 'nova.toml');
+          let tomlContent: Record<string, unknown> = {};
+          if (existsSync(novaTomlPath)) {
+            const { readFileSync } = await import('node:fs');
+            tomlContent = TOML.parse(readFileSync(novaTomlPath, 'utf-8')) as Record<string, unknown>;
+          }
+          const project = (tomlContent['project'] as Record<string, unknown>) ?? {};
+          project['devCommand'] = devCommand;
+          tomlContent['project'] = project;
+          await writeFile(novaTomlPath, TOML.stringify(tomlContent as TOML.JsonMap), 'utf-8');
+          console.log(chalk.dim(`Saved devCommand to nova.toml`));
+        } catch {
+          // Non-critical — continue without saving
+        }
+      } else {
+        console.error(chalk.red('Dev command is required. Add [project] devCommand = "..." to nova.toml'));
+        process.exit(1);
+      }
+    } else {
+      // Empty directory — scaffold as before
+      // Clean up .nova/ if it was created prematurely (scaffolders like create-next-app complain about non-empty dirs)
+      if (novaDir.exists(cwd)) {
+        await novaDir.clean(cwd);
+      }
 
-    devCommand = config.project.devCommand || detectedDevCommand;
-    devPort = config.project.port || detectedPort;
+      const scaffoldInfo = await promptAndScaffold(cwd);
 
-    if (!devCommand) {
-      console.error(
-        chalk.red('No dev command found after scaffolding. Set project.devCommand in nova.toml or ensure package.json has a "dev" script.'),
+      if (!scaffoldInfo.scaffolded) {
+        // User chose 'empty' — nothing more to do
+        process.exit(0);
+      }
+
+      // Apply frontend/backends from scaffold to config (for multi-stack projects)
+      if (scaffoldInfo.frontend) config.project.frontend = scaffoldInfo.frontend;
+      if (scaffoldInfo.backends) config.project.backends = scaffoldInfo.backends;
+
+      // Re-detect stack after scaffolding
+      spinner.start('Re-detecting project...');
+      stack = await stackDetector.detectStack(cwd);
+      detectedDevCommand = await stackDetector.detectDevCommand(stack, cwd);
+      detectedPort = await stackDetector.detectPort(stack, cwd);
+      spinner.succeed(
+        `Detecting project... ${chalk.cyan(stack.framework || 'unknown')} + ${chalk.cyan(stack.typescript ? 'TypeScript' : stack.language || 'unknown')}`,
       );
-      process.exit(1);
+
+      devCommand = config.project.devCommand || detectedDevCommand;
+      devPort = config.project.port || detectedPort;
+
+      if (!devCommand) {
+        console.error(
+          chalk.red('No dev command found after scaffolding. Set project.devCommand in nova.toml or ensure package.json has a "dev" script.'),
+        );
+        process.exit(1);
+      }
     }
   }
 
@@ -419,27 +508,6 @@ export async function startCommand(): Promise<void> {
   }
 
   // ── 8. Set up event loop ────────────────────────────────────────────
-  // Check if API key is available; if not, run setup
-  if (!config.apiKeys.key && config.apiKeys.provider !== 'ollama' && config.apiKeys.provider !== 'claude-cli') {
-    console.log(chalk.yellow('\nNo API key configured. Running setup...\n'));
-    const { runSetup } = await import('../setup.js');
-    await runSetup(cwd);
-    // Re-read config after setup
-    const updatedConfig = await configReader.read(cwd);
-    config.apiKeys = updatedConfig.apiKeys;
-  }
-
-  const providerFactory = new ProviderFactory();
-  let llmClient;
-  try {
-    llmClient = providerFactory.create(config.apiKeys.provider, config.apiKeys.key);
-  } catch (err) {
-    console.log(chalk.yellow('\nAI provider not configured. Nova is running without AI analysis.'));
-    console.log(chalk.dim('Run "nova setup" to configure your API key.\n'));
-    llmClient = null;
-  }
-  const brain = llmClient ? new Brain(llmClient, eventBus) : null;
-
   // Set up executors for task execution
   // Ensure git repo exists for commits
   try {
