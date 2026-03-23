@@ -6,17 +6,21 @@ CLI Building entry: {"index":"src/index.ts","bin/nova":"bin/nova.ts"}
 CLI Using tsconfig: tsconfig.json
 CLI tsup v8.5.1
 CLI Using tsup config: /Users/vladimirpronevic/RiderProjects/site-creator/packages/cli/tsup.config.ts
-CLI Target: es2022
+CLI Target: node22
 CLI Cleaning output folder
 ESM Build start
-ESM dist/bin/nova.js         212.00 B
-ESM dist/index.js            319.00 B
-ESM dist/package-3YCVE5UE.js 896.00 B
-ESM dist/setup-3KREUXRO.js   103.00 B
+ESM dist/index.js            379.00 B
+ESM dist/package-LQ2P7XPJ.js 1.05 KB
+ESM dist/dist-6FOBVQ63.js    219.00 B
+ESM dist/dist-EMATXD3M.js    2.60 KB
+ESM dist/chunk-4AQQAQBM.js   14.79 KB
+ESM dist/chunk-QKD6A4EK.js   7.00 KB
+ESM dist/setup-L5TRND4P.js   133.00 B
+ESM dist/chunk-CNGP7765.js   86.66 KB
+ESM dist/bin/nova.js         274.00 B
 ESM dist/chunk-3RG5ZIWI.js   390.00 B
-ESM dist/chunk-FYSTZ6K6.js   7.07 KB
-ESM dist/chunk-VANHT4MQ.js   82.33 KB
-ESM ⚡️ Build success in 17ms
+ESM dist/chunk-KKTDQOQX.js   244.78 KB
+ESM ⚡️ Build success in 30ms
 DTS Build start
-DTS ⚡️ Build success in 929ms
+DTS ⚡️ Build success in 891ms
 DTS dist/index.d.ts 2.56 KB
