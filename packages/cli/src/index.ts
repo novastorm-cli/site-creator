@@ -12,6 +12,7 @@ import { watchCommand } from './commands/watch.js';
 import { licenseCommand } from './commands/license.js';
 import { entityCommand } from './commands/entity.js';
 import { bibleCommand } from './commands/bible.js';
+import { updateCommand, checkForUpdates } from './commands/update.js';
 import { runSetup } from './setup.js';
 
 export { ConfigReader } from './config.js';
@@ -133,6 +134,13 @@ export function createCli(): Command {
       await bibleCommand(subcommand);
     });
 
+  program
+    .command('update')
+    .description('Update Novastorm CLI to the latest version')
+    .action(async () => {
+      await updateCommand();
+    });
+
   return program;
 }
 
@@ -156,6 +164,8 @@ export async function run(argv: string[] = process.argv): Promise<void> {
 
   if (!suppressBanner) {
     console.log(BANNER);
+    // Non-blocking update check (fire-and-forget)
+    checkForUpdates(pkg.version).catch(() => {});
   }
   const program = createCli();
   await program.parseAsync(argv);
