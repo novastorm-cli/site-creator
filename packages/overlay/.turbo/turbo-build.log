@@ -16,9 +16,9 @@ IIFE Build start
 CLI Cleaning output folder
 ESM Build start
 ESM dist/index.js 158.90 KB
-ESM ⚡️ Build success in 53ms
+ESM ⚡️ Build success in 72ms
 IIFE dist/nova-overlay.global.js 309.60 KB
-IIFE ⚡️ Build success in 56ms
+IIFE ⚡️ Build success in 76ms
 DTS Build start
-DTS ⚡️ Build success in 1745ms
+DTS ⚡️ Build success in 1620ms
 DTS dist/index.d.ts 25.85 KB

@@ -5,6 +5,19 @@ import type { IDevServerRunner } from '@novastorm-ai/core';
 const POLL_INTERVAL_MS = 500;
 const MAX_WAIT_MS = 30_000;
 
+// Patterns that indicate the dev server failed to start
+const ERROR_PATTERNS = [
+  /port \d+ is in use/i,
+  /EADDRINUSE/i,
+  /already running/i,
+  /address already in use/i,
+  /failed to start/i,
+  /error:/i,
+];
+
+// Patterns that indicate the dev server started on a different port
+const PORT_REDIRECT_PATTERN = /(?:using (?:available )?port|listening on|Local:\s+http:\/\/\S+:)(\d+)/i;
+
 export class DevServerRunner implements IDevServerRunner {
   private process: ChildProcess | null = null;
   private logs: string[] = [];
@@ -12,6 +25,8 @@ export class DevServerRunner implements IDevServerRunner {
   private readyHandler: (() => void) | null = null;
   private errorHandler: ((error: string) => void) | null = null;
   private outputHandlers: Array<(output: string) => void> = [];
+  private detectedPort: number | null = null;
+  private startupError: string | null = null;
 
   async spawn(command: string, cwd: string, port: number): Promise<void> {
     const [cmd, ...args] = command.split(' ');
@@ -20,27 +35,39 @@ export class DevServerRunner implements IDevServerRunner {
       cwd,
       shell: true,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: { ...process.env, PORT: String(port) },
     });
 
     this.running = true;
     this.logs = [];
+    this.detectedPort = null;
+    this.startupError = null;
 
-    this.process.stdout?.on('data', (data: Buffer) => {
+    const handleOutput = (data: Buffer) => {
       const text = data.toString();
       this.logs.push(text);
+
+      // Check for port redirect
+      const portMatch = PORT_REDIRECT_PATTERN.exec(text);
+      if (portMatch) {
+        this.detectedPort = parseInt(portMatch[1], 10);
+      }
+
+      // Check for startup errors
+      for (const pattern of ERROR_PATTERNS) {
+        if (pattern.test(text)) {
+          this.startupError = text.trim();
+          break;
+        }
+      }
+
       for (const handler of this.outputHandlers) {
         handler(text);
       }
-    });
+    };
 
-    this.process.stderr?.on('data', (data: Buffer) => {
-      const text = data.toString();
-      this.logs.push(text);
-      for (const handler of this.outputHandlers) {
-        handler(text);
-      }
-    });
+    this.process.stdout?.on('data', handleOutput);
+    this.process.stderr?.on('data', handleOutput);
 
     this.process.on('exit', (code, signal) => {
       this.running = false;
@@ -60,6 +87,14 @@ export class DevServerRunner implements IDevServerRunner {
 
     // Wait for server to become ready
     await this.pollUntilReady(port);
+  }
+
+  getActualPort(): number | null {
+    return this.detectedPort;
+  }
+
+  getStartupError(): string | null {
+    return this.startupError;
   }
 
   onReady(handler: () => void): void {
@@ -110,46 +145,80 @@ export class DevServerRunner implements IDevServerRunner {
       const startTime = Date.now();
 
       const check = (): void => {
+        // Check if process died
         if (!this.running) {
           reject(
             new Error(
-              `Dev server process exited before becoming ready. Logs:\n${this.getLogs()}`,
+              `Dev server process exited before becoming ready.\n\n${this.getLogs()}`,
             ),
           );
           return;
         }
 
-        // Try IPv4 first, then IPv6 — dev servers may listen on either
-        const tryConnect = (host: string, fallback?: string): void => {
-          const req = http.get(
-            `http://${host}:${port}`,
-            (res) => {
-              res.resume();
-              this.readyHandler?.();
-              resolve();
-            },
+        // Check if a startup error was detected in output
+        if (this.startupError) {
+          reject(
+            new Error(
+              `Dev server error:\n\n${this.startupError}`,
+            ),
           );
+          return;
+        }
 
-          req.on('error', () => {
-            if (fallback) {
-              tryConnect(fallback);
-              return;
-            }
-            if (Date.now() - startTime >= MAX_WAIT_MS) {
-              reject(
-                new Error(
-                  `Dev server did not become ready within ${MAX_WAIT_MS / 1000}s. Logs:\n${this.getLogs()}`,
-                ),
-              );
-              return;
-            }
-            setTimeout(check, POLL_INTERVAL_MS);
-          });
+        // Try the expected port, and also the detected port if different
+        const portsToTry = [port];
+        if (this.detectedPort && this.detectedPort !== port) {
+          portsToTry.push(this.detectedPort);
+        }
 
-          req.end();
-        };
+        let remaining = portsToTry.length;
+        let resolved = false;
 
-        tryConnect('127.0.0.1', '[::1]');
+        for (const tryPort of portsToTry) {
+          const tryConnect = (host: string, fallback?: string): void => {
+            if (resolved) return;
+
+            const req = http.get(
+              `http://${host}:${tryPort}`,
+              (res) => {
+                res.resume();
+                if (!resolved) {
+                  resolved = true;
+                  // Update detected port if we connected on a different one
+                  if (tryPort !== port) {
+                    this.detectedPort = tryPort;
+                  }
+                  this.readyHandler?.();
+                  resolve();
+                }
+              },
+            );
+
+            req.on('error', () => {
+              if (resolved) return;
+              if (fallback) {
+                tryConnect(fallback);
+                return;
+              }
+              remaining--;
+              if (remaining <= 0) {
+                if (Date.now() - startTime >= MAX_WAIT_MS) {
+                  reject(
+                    new Error(
+                      `Dev server did not become ready within ${MAX_WAIT_MS / 1000}s.\n\nServer output:\n${this.getLogs()}`,
+                    ),
+                  );
+                  return;
+                }
+                setTimeout(check, POLL_INTERVAL_MS);
+              }
+            });
+
+            req.end();
+          };
+
+          tryConnect('127.0.0.1', '[::1]');
+        }
       };
 
       check();

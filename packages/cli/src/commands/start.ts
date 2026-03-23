@@ -297,7 +297,7 @@ export async function startCommand(): Promise<void> {
   // Set up project map API
   const projectMapApi = new ProjectMapApi();
 
-  const proxyPort = devPort + PROXY_PORT_OFFSET;
+  let proxyPort = devPort + PROXY_PORT_OFFSET;
 
   // ── 4b. Check ports ────────────────────────────────────────────────
   spinner.start('Checking ports...');
@@ -326,9 +326,23 @@ export async function startCommand(): Promise<void> {
     await devServer.spawn(devCommand, cwd, devPort);
   } catch (err) {
     spinner.fail('Dev server failed to start.');
-    throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(chalk.red(`\n${msg}`));
+    console.log(chalk.gray(`\nTips:`));
+    console.log(chalk.gray(`  • Kill existing process: ${chalk.cyan(`lsof -ti :${devPort} | xargs kill`)}`));
+    console.log(chalk.gray(`  • Change port in nova.toml: ${chalk.cyan(`port = ${devPort + 10}`)}`));
+    process.exit(1);
   }
-  spinner.succeed('Starting dev server... done');
+
+  // Check if dev server started on a different port
+  const actualPort = devServer.getActualPort();
+  if (actualPort && actualPort !== devPort) {
+    spinner.succeed(`Dev server started on port ${chalk.yellow(actualPort)} (requested ${devPort})`);
+    devPort = actualPort;
+    proxyPort = devPort + PROXY_PORT_OFFSET;
+  } else {
+    spinner.succeed('Dev server started');
+  }
 
   // ── 6. Start proxy server ──────────────────────────────────────────
   spinner.start('Starting proxy server...');
