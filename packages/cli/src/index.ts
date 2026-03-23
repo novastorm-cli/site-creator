@@ -165,8 +165,15 @@ export async function run(argv: string[] = process.argv): Promise<void> {
 
   if (!suppressBanner) {
     console.log(BANNER);
+    const isLocal = !import.meta.url.includes('node_modules');
+    if (isLocal) {
+      console.log('\x1b[43m\x1b[30m  LOCAL BUILD  \x1b[0m');
+    }
+    console.log(`\x1b[90m  v${pkg.version}\x1b[0m\n`);
     // Non-blocking update check (fire-and-forget)
-    checkForUpdates(pkg.version).catch(() => {});
+    if (!isLocal) {
+      checkForUpdates(pkg.version).catch(() => {});
+    }
   }
   const program = createCli();
   await program.parseAsync(argv);

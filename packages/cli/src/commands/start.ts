@@ -1,4 +1,5 @@
 import { exec } from 'node:child_process';
+import * as net from 'node:net';
 import * as path from 'node:path';
 import chalk from 'chalk';
 import ora from 'ora';
@@ -37,6 +38,15 @@ import { NovaChat } from '../chat.js';
 import { handleSettingsCommand } from '../settings.js';
 
 const PROXY_PORT_OFFSET = 1;
+
+function isPortInUse(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(true));
+    server.once('listening', () => { server.close(); resolve(false); });
+    server.listen(port, '127.0.0.1');
+  });
+}
 function findOverlayScript(): string {
   const candidates = [
     // From cli/dist/ (when imported as module)
@@ -278,6 +288,26 @@ export async function startCommand(): Promise<void> {
   const projectMapApi = new ProjectMapApi();
 
   const proxyPort = devPort + PROXY_PORT_OFFSET;
+
+  // ── 4b. Check ports ────────────────────────────────────────────────
+  spinner.start('Checking ports...');
+  const devPortBusy = await isPortInUse(devPort);
+  const proxyPortBusy = await isPortInUse(proxyPort);
+
+  if (devPortBusy || proxyPortBusy) {
+    spinner.fail('Port conflict detected:');
+    if (devPortBusy) {
+      console.log(chalk.red(`  ✗ Port ${devPort} is already in use (dev server)`));
+      console.log(chalk.gray(`    Kill the process: ${chalk.cyan(`lsof -ti :${devPort} | xargs kill`)}`));
+    }
+    if (proxyPortBusy) {
+      console.log(chalk.red(`  ✗ Port ${proxyPort} is already in use (proxy)`));
+      console.log(chalk.gray(`    Kill the process: ${chalk.cyan(`lsof -ti :${proxyPort} | xargs kill`)}`));
+    }
+    console.log(chalk.gray(`\n  Or change the port in nova.toml: ${chalk.cyan('port = <number>')}\n`));
+    process.exit(1);
+  }
+  spinner.succeed('Ports available');
 
   // ── 5. Start dev server ─────────────────────────────────────────────
   spinner.start(`Starting dev server (${chalk.dim(devCommand)})...`);
