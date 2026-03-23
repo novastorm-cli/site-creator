@@ -1,0 +1,10 @@
+export { ScreenshotCapture } from './ScreenshotCapture.js';
+export { DomCapture } from './DomCapture.js';
+export { VoiceCapture } from './VoiceCapture.js';
+export { ConsoleCapture } from './ConsoleCapture.js';
+export * from './GestureTypes.js';
+export { CursorTracker } from './CursorTracker.js';
+export { GestureRecognizer } from './GestureRecognizer.js';
+export { TemporalCorrelator } from './TemporalCorrelator.js';
+export { buildGestureElement, buildSelector } from './gestureUtils.js';
+export { AreaCapture } from './AreaCapture.js';

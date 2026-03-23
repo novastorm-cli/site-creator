@@ -1,0 +1,117 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { rm, mkdtemp, cp } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { ProjectIndexer } from '../ProjectIndexer.js';
+
+const fixturesDir = path.resolve(__dirname, '../../../../../tests/fixtures');
+
+describe('ProjectIndexer', () => {
+  const indexer = new ProjectIndexer();
+  let tmpDir: string;
+
+  /** Copy fixture to a temp dir so parallel tests don't conflict on .nova/ */
+  async function copyFixture(name: string): Promise<string> {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), `nova-indexer-test-${name}-`));
+    const src = path.join(fixturesDir, name);
+    await cp(src, tmpDir, { recursive: true });
+    return tmpDir;
+  }
+
+  beforeEach(async () => {
+    tmpDir = '';
+  });
+
+  afterEach(async () => {
+    if (tmpDir) {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // ── index() ───────────────────────────────────────────────────
+
+  describe('index()', () => {
+    it('should return a ProjectMap with stack, routes, components, and endpoints for nextjs-app', async () => {
+      const projectPath = await copyFixture('nextjs-app');
+
+      const map = await indexer.index(projectPath);
+
+      // Stack
+      expect(map.stack).toBeDefined();
+      expect(map.stack.framework).toBe('next.js');
+      expect(map.stack.typescript).toBe(true);
+
+      // Routes
+      expect(map.routes).toBeDefined();
+      expect(Array.isArray(map.routes)).toBe(true);
+      expect(map.routes.length).toBeGreaterThan(0);
+      // Should have the root page route
+      expect(map.routes.some((r) => r.path === '/' && r.type === 'page')).toBe(true);
+
+      // Components
+      expect(map.components).toBeDefined();
+      expect(Array.isArray(map.components)).toBe(true);
+      expect(map.components.length).toBeGreaterThan(0);
+
+      // Endpoints
+      expect(map.endpoints).toBeDefined();
+      expect(Array.isArray(map.endpoints)).toBe(true);
+      expect(map.endpoints.length).toBeGreaterThan(0);
+      // Should have the /api/users endpoint
+      expect(map.endpoints.some((e) => e.path === '/api/users')).toBe(true);
+    });
+
+    it('should save graph.json in the .nova/ directory', async () => {
+      const projectPath = await copyFixture('nextjs-app');
+
+      await indexer.index(projectPath);
+
+      const graphPath = path.join(projectPath, '.nova', 'graph.json');
+      expect(existsSync(graphPath)).toBe(true);
+
+      const graphContent = readFileSync(graphPath, 'utf-8');
+      const parsed: unknown = JSON.parse(graphContent);
+      expect(Array.isArray(parsed)).toBe(true);
+      expect((parsed as unknown[]).length).toBeGreaterThan(0);
+    });
+
+    it('should return a non-empty compressedContext string', async () => {
+      const projectPath = await copyFixture('nextjs-app');
+
+      const map = await indexer.index(projectPath);
+
+      expect(map.compressedContext).toBeDefined();
+      expect(typeof map.compressedContext).toBe('string');
+      expect(map.compressedContext.length).toBeGreaterThan(0);
+    });
+  });
+
+  // ── update() ──────────────────────────────────────────────────
+
+  describe('update()', () => {
+    it('should update the graph for a changed file', async () => {
+      const projectPath = await copyFixture('nextjs-app');
+
+      // First, do a full index
+      await indexer.index(projectPath);
+
+      const graphPathBefore = path.join(projectPath, '.nova', 'graph.json');
+      const contentBefore = readFileSync(graphPathBefore, 'utf-8');
+
+      // Update with the route file (it exists, so the node should be refreshed)
+      const changedFile = path.join(projectPath, 'app', 'api', 'users', 'route.ts');
+      await indexer.update([changedFile]);
+
+      const contentAfter = readFileSync(graphPathBefore, 'utf-8');
+      // Graph file should still exist and be valid JSON
+      const parsed: unknown = JSON.parse(contentAfter);
+      expect(Array.isArray(parsed)).toBe(true);
+      expect((parsed as unknown[]).length).toBeGreaterThan(0);
+
+      // The updated file should still be present in the graph
+      const nodes = parsed as Array<{ filePath: string }>;
+      expect(nodes.some((n) => n.filePath.includes('api/users/route'))).toBe(true);
+    });
+  });
+});

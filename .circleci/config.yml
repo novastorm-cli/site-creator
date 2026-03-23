@@ -1,0 +1,76 @@
+version: 2.1
+
+jobs:
+  build-and-test:
+    docker:
+      - image: cimg/node:22.12
+    steps:
+      - checkout
+      - run:
+          name: Install pnpm
+          command: sudo npm install -g pnpm@10.32.1
+      - restore_cache:
+          keys:
+            - deps-v1-{{ checksum "pnpm-lock.yaml" }}
+            - deps-v1-
+      - run:
+          name: Install dependencies
+          command: pnpm install --frozen-lockfile
+      - save_cache:
+          key: deps-v1-{{ checksum "pnpm-lock.yaml" }}
+          paths:
+            - node_modules
+            - packages/*/node_modules
+      - run:
+          name: Build
+          command: pnpm build
+      - run:
+          name: Test
+          command: pnpm test
+
+  publish:
+    docker:
+      - image: cimg/node:22.12
+    steps:
+      - checkout
+      - run:
+          name: Install pnpm
+          command: sudo npm install -g pnpm@10.32.1
+      - restore_cache:
+          keys:
+            - deps-v1-{{ checksum "pnpm-lock.yaml" }}
+            - deps-v1-
+      - run:
+          name: Install dependencies
+          command: pnpm install --frozen-lockfile
+      - run:
+          name: Build
+          command: pnpm build
+      - run:
+          name: Publish to npm
+          command: |
+            echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+            cp ~/.npmrc packages/cli/.npmrc
+            cd packages/cli && npm publish --access public 2>&1 || pnpm publish --no-git-checks --access public 2>&1
+
+workflows:
+  test:
+    jobs:
+      - build-and-test
+
+  release:
+    jobs:
+      - build-and-test:
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+      - publish:
+          requires:
+            - build-and-test
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
