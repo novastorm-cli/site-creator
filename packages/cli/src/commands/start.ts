@@ -73,6 +73,16 @@ export async function startCommand(): Promise<void> {
   const devServer = new DevServerRunner();
   const proxyServer = new ProxyServer();
   const wsServer = new WebSocketServer();
+
+  // Register early Ctrl+C handler so it works during startup (before chat.start)
+  let earlyExit = true;
+  process.on('SIGINT', () => {
+    if (earlyExit) {
+      console.log(chalk.dim('\nShutting down...'));
+      devServer.kill().catch(() => {});
+      process.exit(0);
+    }
+  });
   const licenseChecker = new LicenseChecker();
   const indexer = new ProjectIndexer();
   const logger = new NovaLogger();
@@ -868,6 +878,9 @@ export async function startCommand(): Promise<void> {
   });
 
   chat.start();
+
+  // Disable early exit handler, use proper shutdown from now on
+  earlyExit = false;
 
   // Handle Ctrl+C — must be registered BEFORE the keep-alive promise
   process.on('SIGINT', () => {
