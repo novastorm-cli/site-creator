@@ -3,7 +3,7 @@ import { LicenseChecker, TeamDetector } from '@novastorm-ai/licensing';
 import { ConfigReader } from '../config.js';
 
 const KEY_PATTERN = /^NOVA-([A-Z2-7]+)-([a-f0-9]{4})$/;
-const VALIDATE_ENDPOINT = 'https://api.nova-architect.dev/v1/license/validate';
+const VALIDATE_ENDPOINT = 'https://cli-api.novastorm.ai/v1/license/validate';
 const TIMEOUT_MS = 5_000;
 
 export async function licenseCommand(

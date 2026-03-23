@@ -1,7 +1,7 @@
 import type { ITelemetry } from '@novastorm-ai/core';
 import type { TelemetryPayload, TelemetryResponse, NudgeLevel } from '@novastorm-ai/core';
 
-const TELEMETRY_ENDPOINT = 'https://api.nova-architect.dev/v1/telemetry';
+const TELEMETRY_ENDPOINT = 'https://cli-api.novastorm.ai/v1/telemetry';
 const TIMEOUT_MS = 3_000;
 
 export class Telemetry implements ITelemetry {

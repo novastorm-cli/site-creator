@@ -178,7 +178,7 @@ describe('E2E: Licensing full flow', () => {
       hasLicense: false,
     });
     expect(nudgeOutput).toContain('4 developers');
-    expect(nudgeOutput).toContain('https://nova-architect.dev/pricing');
+    expect(nudgeOutput).toContain('https://cli.novastorm.ai/#pricing');
   });
 
   // ── Scenario D: 4 authors, valid license key → company tier, valid ──

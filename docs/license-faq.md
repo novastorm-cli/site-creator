@@ -48,7 +48,7 @@ When your project has more than 3 unique human developers committing within a 90
 
 ### How do I get a license key?
 
-Visit [https://nova-architect.dev/pricing](https://nova-architect.dev/pricing) to purchase a license. You will receive a key in the format `NOVA-{BASE32}-{CHECKSUM}`.
+Visit [https://cli.novastorm.ai/#pricing](https://cli.novastorm.ai/#pricing) to purchase a license. You will receive a key in the format `NOVA-{BASE32}-{CHECKSUM}`.
 
 ### How do I activate my license?
 

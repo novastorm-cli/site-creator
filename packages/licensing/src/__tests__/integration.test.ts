@@ -131,7 +131,7 @@ describe('Integration: TeamDetector + LicenseChecker + Telemetry + NudgeRenderer
 
       expect(fetchSpy).toHaveBeenCalledOnce();
       const [url, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
-      expect(url).toBe('https://api.nova-architect.dev/v1/telemetry');
+      expect(url).toBe('https://cli-api.novastorm.ai/v1/telemetry');
 
       const body = JSON.parse(options.body as string);
       expect(body).toEqual(
@@ -201,7 +201,7 @@ describe('Integration: TeamDetector + LicenseChecker + Telemetry + NudgeRenderer
       };
       const output = renderer.render(context);
       expect(output).toContain('free for teams of 3 or fewer');
-      expect(output).toContain('https://nova-architect.dev/pricing');
+      expect(output).toContain('https://cli.novastorm.ai/#pricing');
     });
 
     it('level 2 → recommendation nudge with devCount', () => {
@@ -245,7 +245,7 @@ describe('Integration: TeamDetector + LicenseChecker + Telemetry + NudgeRenderer
           expect(output).toBeNull();
         } else {
           expect(output).toBeTruthy();
-          expect(output).toContain('https://nova-architect.dev/pricing');
+          expect(output).toContain('https://cli.novastorm.ai/#pricing');
         }
       }
     });

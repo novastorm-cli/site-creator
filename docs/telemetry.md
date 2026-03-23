@@ -26,7 +26,7 @@ Each telemetry ping contains:
 
 ## How It Is Sent
 
-- Telemetry is sent as a single HTTPS POST to `https://api.nova-architect.dev/v1/telemetry`
+- Telemetry is sent as a single HTTPS POST to `https://cli-api.novastorm.ai/v1/telemetry`
 - The request has a 3-second timeout
 - If the request fails for any reason, it is silently dropped (fire-and-forget)
 - Telemetry is sent once per `nova start` invocation, not continuously

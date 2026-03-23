@@ -25,7 +25,7 @@ describe('NudgeRenderer', () => {
 
     expect(result).not.toBeNull();
     expect(result).toContain('free for teams of 3 or fewer');
-    expect(result).toContain('https://nova-architect.dev/pricing');
+    expect(result).toContain('https://cli.novastorm.ai/#pricing');
   });
 
   it('should return warning with devCount for nudge level 2', () => {
@@ -33,7 +33,7 @@ describe('NudgeRenderer', () => {
 
     expect(result).not.toBeNull();
     expect(result).toContain('7 developers');
-    expect(result).toContain('https://nova-architect.dev/pricing');
+    expect(result).toContain('https://cli.novastorm.ai/#pricing');
   });
 
   it('should return box format for nudge level 3', () => {
@@ -43,7 +43,7 @@ describe('NudgeRenderer', () => {
     expect(result).toContain('License Required');
     expect(result).toContain('12');
     expect(result).toContain('commercial license');
-    expect(result).toContain('https://nova-architect.dev/pricing');
+    expect(result).toContain('https://cli.novastorm.ai/#pricing');
   });
 
   it('should pad devCount in level 3 box', () => {

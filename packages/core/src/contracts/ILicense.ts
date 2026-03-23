@@ -24,7 +24,7 @@ export interface ITelemetry {
    * Sends anonymous telemetry ping. Fire-and-forget -- never throws, never blocks.
    *
    * Payload: TelemetryPayload
-   * Endpoint: POST https://api.nova-architect.dev/v1/telemetry
+   * Endpoint: POST https://cli-api.novastorm.ai/v1/telemetry
    *
    * Disabled when: NOVA_TELEMETRY=false env var is set or config.telemetry.enabled is false
    * Timeout: 3 seconds, then silently abandons

@@ -48,7 +48,7 @@ describe('Telemetry', () => {
 
       const [url, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
 
-      expect(url).toBe('https://api.nova-architect.dev/v1/telemetry');
+      expect(url).toBe('https://cli-api.novastorm.ai/v1/telemetry');
       expect(options.method).toBe('POST');
 
       const body = JSON.parse(options.body as string);

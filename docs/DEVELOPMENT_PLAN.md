@@ -979,7 +979,7 @@ export interface ITelemetry {
    *
    * Payload: { licenseKey: string | null, devCount: number, projectHash: string, version: string }
    * projectHash = sha256(projectPath), NOT project content
-   * Endpoint: POST https://api.nova-architect.dev/telemetry
+   * Endpoint: POST https://cli-api.novastorm.ai/v1/telemetry
    *
    * Disabled when: NOVA_TELEMETRY=false env var is set
    * Timeout: 3 seconds, then silently abandons
