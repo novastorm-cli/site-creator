@@ -117,6 +117,7 @@ export class Lane3Executor {
     private readonly agentPromptLoader?: IAgentPromptLoader,
     private readonly pathGuard?: IPathGuard,
     commitQueue?: CommitQueue,
+    private readonly forceSkipValidation: boolean = false,
   ) {
     this.diffApplier = new DiffApplier();
     this.commitQueue = commitQueue ?? new CommitQueue(this.gitManager);
@@ -259,7 +260,7 @@ export class Lane3Executor {
       }
 
       // TESTER/DIRECTOR loop (skip for single-file small changes to save time)
-      const skipValidation = fileBlocks.length === 1 && fileBlocks[0].content.length < 3000;
+      const skipValidation = this.forceSkipValidation || (fileBlocks.length === 1 && fileBlocks[0].content.length < 3000);
       const tscSkip = this.shouldSkipTsc(fileBlocks);
       const validator = new CodeValidator(this.projectPath);
       const fixer = new CodeFixer(this.llmClient, this.eventBus);

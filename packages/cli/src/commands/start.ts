@@ -685,6 +685,9 @@ export async function startCommand(): Promise<void> {
 
     // After task completes, check site health (wait for hot reload)
     setTimeout(async () => {
+      // Skip post-task check for auto-fix tasks (prevents cascading fixes)
+      if (autoFixer?.isAutofixTask(event.data.taskId)) return;
+
       // Check dev server logs for errors
       const logs = devServer.getLogs();
       const recentLogs = logs.slice(-2000);

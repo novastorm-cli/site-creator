@@ -6,7 +6,7 @@ import type {
   IGitManager,
   EventBus,
 } from '@novastorm-ai/core';
-import { Lane3Executor, CommitQueue } from '@novastorm-ai/core';
+import { Lane2Executor, Lane3Executor, CommitQueue } from '@novastorm-ai/core';
 import type { WebSocketServer } from '@novastorm-ai/proxy';
 
 // Patterns that indicate fixable compilation errors
@@ -43,6 +43,7 @@ export class ErrorAutoFixer {
   private readonly MAX_FIX_ATTEMPTS = 3;
   private lastErrorSignature = '';
   private cooldownUntil = 0;
+  readonly autofixTaskIds = new Set<string>();
 
   constructor(
     private readonly projectPath: string,
@@ -53,6 +54,10 @@ export class ErrorAutoFixer {
     private readonly projectMap: ProjectMap,
     private readonly commitQueue?: CommitQueue,
   ) {}
+
+  isAutofixTask(taskId: string): boolean {
+    return this.autofixTaskIds.has(taskId);
+  }
 
   /**
    * Process dev server output. Call this for every stdout/stderr chunk.
@@ -172,6 +177,7 @@ Error: ${errorOutput.slice(0, 300)}`;
       lane: 3,
       status: 'pending',
     };
+    this.autofixTaskIds.add(task.id);
 
     const executor = new Lane3Executor(
       this.projectPath,
@@ -183,6 +189,7 @@ Error: ${errorOutput.slice(0, 300)}`;
       undefined, // agentPromptLoader
       undefined, // pathGuard
       this.commitQueue,
+      true, // skipValidation — auto-fix tasks skip tsc
     );
 
     console.log(chalk.cyan('[Nova] Auto-fixing image errors...'));
@@ -191,6 +198,7 @@ Error: ${errorOutput.slice(0, 300)}`;
     this.wsServer.sendEvent({ type: 'task_created', data: task });
 
     const result = await executor.execute(task, this.projectMap);
+    this.autofixTaskIds.delete(task.id);
 
     if (result.success) {
       console.log(chalk.green('[Nova] Image errors fixed automatically'));
@@ -209,8 +217,6 @@ Error: ${errorOutput.slice(0, 300)}`;
   }
 
   private async fixCompilationError(errorOutput: string): Promise<void> {
-    const truncatedError = errorOutput.slice(0, 500);
-
     console.log(
       chalk.yellow('[Nova] Detected compilation error — attempting auto-fix'),
     );
@@ -218,6 +224,65 @@ Error: ${errorOutput.slice(0, 300)}`;
       type: 'status',
       data: { message: 'Compilation error detected. Auto-fixing...' },
     });
+
+    const targetFile = this.extractFilePath(errorOutput);
+
+    if (targetFile && this.projectMap.fileContexts.has(targetFile)) {
+      // Simple single-file error — use fast Lane 2
+      await this.fixWithLane2(targetFile, errorOutput);
+    } else {
+      // Complex/unknown error — use Lane 3
+      await this.fixWithLane3(errorOutput);
+    }
+  }
+
+  private async fixWithLane2(targetFile: string, errorOutput: string): Promise<void> {
+    const truncatedError = errorOutput.slice(0, 500);
+
+    const task: TaskItem = {
+      id: crypto.randomUUID(),
+      description: `Fix the following compilation/build error in the project. Read the error carefully and fix the root cause:\n${truncatedError}`,
+      files: [targetFile],
+      type: 'single_file',
+      lane: 2,
+      status: 'pending',
+    };
+    this.autofixTaskIds.add(task.id);
+
+    const executor = new Lane2Executor(
+      this.projectPath,
+      this.llmClient,
+      this.gitManager,
+      undefined, // pathGuard
+      this.commitQueue,
+    );
+
+    console.log(chalk.cyan(`[Nova] Auto-fixing compilation error via Lane 2 (${targetFile})...`));
+    this.wsServer.sendEvent({ type: 'status', data: { message: 'autofix_start' } });
+    this.eventBus.emit({ type: 'task_started', data: { taskId: task.id } });
+    this.wsServer.sendEvent({ type: 'task_created', data: task });
+
+    const result = await executor.execute(task, this.projectMap);
+    this.autofixTaskIds.delete(task.id);
+
+    if (result.success) {
+      console.log(chalk.green('[Nova] Compilation error fixed automatically (Lane 2)'));
+      this.eventBus.emit({
+        type: 'task_completed',
+        data: { taskId: task.id, diff: result.diff ?? '', commitHash: result.commitHash ?? '' },
+      });
+      this.wsServer.sendEvent({ type: 'status', data: { message: 'autofix_end' } });
+    } else {
+      console.log(chalk.red(`[Nova] Auto-fix failed: ${result.error}`));
+      const failEvent = { type: 'task_failed' as const, data: { taskId: task.id, error: result.error ?? 'Auto-fix failed' } };
+      this.eventBus.emit(failEvent);
+      this.wsServer.sendEvent(failEvent);
+      this.wsServer.sendEvent({ type: 'status', data: { message: 'autofix_failed' } });
+    }
+  }
+
+  private async fixWithLane3(errorOutput: string): Promise<void> {
+    const truncatedError = errorOutput.slice(0, 500);
 
     const task: TaskItem = {
       id: crypto.randomUUID(),
@@ -227,6 +292,7 @@ Error: ${errorOutput.slice(0, 300)}`;
       lane: 3,
       status: 'pending',
     };
+    this.autofixTaskIds.add(task.id);
 
     const executor = new Lane3Executor(
       this.projectPath,
@@ -238,6 +304,7 @@ Error: ${errorOutput.slice(0, 300)}`;
       undefined, // agentPromptLoader
       undefined, // pathGuard
       this.commitQueue,
+      true, // skipValidation — auto-fix tasks skip tsc
     );
 
     console.log(chalk.cyan('[Nova] Auto-fixing compilation error...'));
@@ -246,6 +313,7 @@ Error: ${errorOutput.slice(0, 300)}`;
     this.wsServer.sendEvent({ type: 'task_created', data: task });
 
     const result = await executor.execute(task, this.projectMap);
+    this.autofixTaskIds.delete(task.id);
 
     if (result.success) {
       console.log(chalk.green('[Nova] Compilation error fixed automatically'));
@@ -261,5 +329,19 @@ Error: ${errorOutput.slice(0, 300)}`;
       this.wsServer.sendEvent(failEvent);
       this.wsServer.sendEvent({ type: 'status', data: { message: 'autofix_failed' } });
     }
+  }
+
+  private extractFilePath(errorOutput: string): string | null {
+    // Common patterns: "./src/app/page.tsx", "src/app/page.tsx", "/app/page.tsx"
+    const patterns = [
+      /\.\/([^\s:]+\.[tj]sx?)/,                      // ./path/to/file.tsx
+      /(?:in|at|from)\s+([^\s:]+\.[tj]sx?)/i,        // in path/to/file.tsx
+      /([^\s:]+\.[tj]sx?)[\s:]/,                      // path/to/file.tsx:line
+    ];
+    for (const p of patterns) {
+      const match = errorOutput.match(p);
+      if (match) return match[1];
+    }
+    return null;
   }
 }
