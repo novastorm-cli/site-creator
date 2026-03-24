@@ -165,26 +165,70 @@ export class StackDetector implements IStackDetector {
   // ---------------------------------------------------------------------------
 
   private async detectFromPackageJson(projectPath: string): Promise<StackInfo | null> {
-    const pkg = await this.readPackageJson(projectPath);
-    if (!pkg) return null;
+    const content = await this.readFileSafe(join(projectPath, 'package.json'));
+    if (!content) return null;
 
-    const allDeps = {
-      ...pkg.dependencies,
-      ...pkg.devDependencies,
-    };
-
-    const framework = FRAMEWORK_DEPS.find((f) => f.dep in allDeps);
-
+    // package.json exists — this is a Node.js project even if JSON is broken
     const typescript = await this.hasTypescript(projectPath);
     const packageManager = await this.detectPackageManager(projectPath);
 
-    // Fallback: if package.json exists but no known framework, detect as generic node
+    let pkg: PackageJson | null = null;
+    try {
+      pkg = JSON.parse(content) as PackageJson;
+    } catch {
+      console.warn('[Nova] Warning: package.json contains invalid JSON. Detecting framework from directory structure.');
+    }
+
+    let frameworkName: string | undefined;
+
+    if (pkg) {
+      const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+      frameworkName = FRAMEWORK_DEPS.find((f) => f.dep in allDeps)?.framework;
+    }
+
+    // Fallback: detect framework from directory structure if package.json broken or no deps match
+    if (!frameworkName) {
+      frameworkName = await this.detectFrameworkFromDirs(projectPath);
+    }
+
     return {
-      framework: framework?.framework ?? 'node',
+      framework: frameworkName ?? 'node',
       language: typescript ? 'typescript' : 'javascript',
       packageManager,
       typescript,
     };
+  }
+
+  /**
+   * Detect framework by checking for characteristic directories/files.
+   * Used as fallback when package.json is broken or has no known deps.
+   */
+  private async detectFrameworkFromDirs(projectPath: string): Promise<string | undefined> {
+    try {
+      const entries = await readdir(projectPath);
+      const entrySet = new Set(entries);
+
+      // Next.js: .next/ or next.config.* or app/ with layout/page files
+      if (entrySet.has('.next') || entries.some(e => e.startsWith('next.config'))) return 'next.js';
+
+      // Nuxt: .nuxt/ or nuxt.config.*
+      if (entrySet.has('.nuxt') || entries.some(e => e.startsWith('nuxt.config'))) return 'nuxt';
+
+      // SvelteKit: svelte.config.*
+      if (entries.some(e => e.startsWith('svelte.config'))) return 'sveltekit';
+
+      // Astro: astro.config.*
+      if (entries.some(e => e.startsWith('astro.config'))) return 'astro';
+
+      // Vite: vite.config.*
+      if (entries.some(e => e.startsWith('vite.config'))) return 'vite';
+
+      // Angular: angular.json
+      if (entrySet.has('angular.json')) return 'angular';
+    } catch {
+      // ignore
+    }
+    return undefined;
   }
 
   private async hasDotnet(projectPath: string): Promise<boolean> {
