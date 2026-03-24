@@ -1,12 +1,12 @@
 import { exec } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { writeFile, mkdir } from 'node:fs/promises';
 import * as net from 'node:net';
 import * as path from 'node:path';
 import chalk from 'chalk';
 import ora from 'ora';
 import { resolve, join } from 'node:path';
-import { input } from '@inquirer/prompts';
+import { input, select } from '@inquirer/prompts';
 import TOML from '@iarna/toml';
 import {
   NovaEventBus,
@@ -449,9 +449,80 @@ export async function startCommand(): Promise<void> {
       const { execSync } = await import('node:child_process');
       execSync(installCmd, { cwd, stdio: 'inherit' });
       console.log(chalk.green('  Dependencies installed.'));
-    } catch {
-      console.log(chalk.red(`  Failed to install dependencies. Run "${installCmd}" manually.`));
-      process.exit(1);
+    } catch (installErr) {
+      const errMsg = installErr instanceof Error ? installErr.message : String(installErr);
+      console.log(chalk.red(`\n  Failed to install dependencies.\n`));
+
+      const choices: Array<{ name: string; value: string }> = [];
+
+      if (/EJSONPARSE|JSON/.test(errMsg)) {
+        console.log(chalk.yellow('  Cause: package.json contains invalid JSON.\n'));
+        choices.push(
+          { name: '🔧 Fix package.json automatically (remove syntax errors)', value: 'fix-json' },
+        );
+      }
+      if (/ENOENT|not found|Cannot find/.test(errMsg)) {
+        console.log(chalk.yellow('  Cause: missing files or modules.\n'));
+      }
+
+      choices.push(
+        { name: '🔄 Retry install', value: 'retry' },
+        { name: '📝 Enter a different install command', value: 'custom' },
+        { name: '⏭️  Skip install and continue', value: 'skip' },
+        { name: '❌ Exit', value: 'exit' },
+      );
+
+      let resolved = false;
+      while (!resolved) {
+        let action: string;
+        try {
+          action = await select({ message: 'What would you like to do?', choices });
+        } catch {
+          process.exit(0);
+        }
+
+        if (action === 'fix-json') {
+          try {
+            const pkgPath = join(cwd, 'package.json');
+            let content = readFileSync(pkgPath, 'utf-8');
+            content = content.replace(/,(\s*[}\]])/g, '$1');
+            writeFileSync(pkgPath, content, 'utf-8');
+            console.log(chalk.green('  Fixed package.json. Retrying install...\n'));
+            const { execSync } = await import('node:child_process');
+            execSync(installCmd, { cwd, stdio: 'inherit' });
+            console.log(chalk.green('  Dependencies installed.'));
+            resolved = true;
+          } catch (fixErr) {
+            console.log(chalk.red(`  Fix failed: ${fixErr instanceof Error ? fixErr.message : fixErr}\n`));
+          }
+        } else if (action === 'retry') {
+          try {
+            const { execSync } = await import('node:child_process');
+            execSync(installCmd, { cwd, stdio: 'inherit' });
+            console.log(chalk.green('  Dependencies installed.'));
+            resolved = true;
+          } catch {
+            console.log(chalk.red('  Install still failing.\n'));
+          }
+        } else if (action === 'custom') {
+          try {
+            const customCmd = await input({ message: 'Enter install command:' });
+            if (customCmd.trim()) {
+              const { execSync } = await import('node:child_process');
+              execSync(customCmd.trim(), { cwd, stdio: 'inherit' });
+              console.log(chalk.green('  Done.'));
+              resolved = true;
+            }
+          } catch {
+            console.log(chalk.red('  Command failed.\n'));
+          }
+        } else if (action === 'skip') {
+          console.log(chalk.dim('  Skipping install.'));
+          resolved = true;
+        } else {
+          process.exit(0);
+        }
+      }
     }
   }
 
@@ -464,10 +535,116 @@ export async function startCommand(): Promise<void> {
     spinner.fail('Dev server failed to start.');
     const msg = err instanceof Error ? err.message : String(err);
     console.log(chalk.red(`\n${msg}`));
-    console.log(chalk.gray(`\nTips:`));
-    console.log(chalk.gray(`  • Kill existing process: ${chalk.cyan(`lsof -ti :${devPort} | xargs kill`)}`));
-    console.log(chalk.gray(`  • Change port in nova.toml: ${chalk.cyan(`port = ${devPort + 10}`)}`));
-    process.exit(1);
+
+    const choices: Array<{ name: string; value: string }> = [];
+
+    if (/EADDRINUSE|address already in use/i.test(msg)) {
+      console.log(chalk.yellow(`\n  Port ${devPort} is already in use.\n`));
+      choices.push(
+        { name: `🔪 Kill process on port ${devPort} and retry`, value: 'kill-retry' },
+        { name: '🔢 Use a different port', value: 'change-port' },
+      );
+    }
+    if (/Cannot find module|MODULE_NOT_FOUND/i.test(msg)) {
+      console.log(chalk.yellow('\n  Missing dependencies.\n'));
+      choices.push(
+        { name: '📦 Run npm install and retry', value: 'install-retry' },
+      );
+    }
+    if (/EJSONPARSE|JSON/.test(msg)) {
+      console.log(chalk.yellow('\n  package.json has invalid JSON.\n'));
+      choices.push(
+        { name: '🔧 Fix package.json and retry', value: 'fix-json-retry' },
+      );
+    }
+
+    choices.push(
+      { name: '📝 Enter a different dev command', value: 'custom-cmd' },
+      { name: '🔄 Retry with same command', value: 'retry' },
+      { name: '❌ Exit', value: 'exit' },
+    );
+
+    let serverResolved = false;
+    while (!serverResolved) {
+      let action: string;
+      try {
+        action = await select({ message: 'What would you like to do?', choices });
+      } catch {
+        process.exit(0);
+      }
+
+      if (action === 'kill-retry') {
+        try {
+          const { execSync } = await import('node:child_process');
+          execSync(`lsof -ti :${devPort} | xargs kill -9`, { stdio: 'ignore' });
+          console.log(chalk.dim(`  Killed process on port ${devPort}. Retrying...\n`));
+          await devServer.spawn(devCommand, cwd, devPort);
+          serverResolved = true;
+        } catch (retryErr) {
+          console.log(chalk.red(`  Still failing: ${retryErr instanceof Error ? retryErr.message : retryErr}\n`));
+        }
+      } else if (action === 'change-port') {
+        try {
+          const newPortStr = await input({ message: 'Enter port number:', default: String(devPort + 10) });
+          devPort = parseInt(newPortStr, 10);
+          proxyPort = devPort + PROXY_PORT_OFFSET;
+          console.log(chalk.dim(`  Trying port ${devPort}...\n`));
+          await devServer.spawn(devCommand, cwd, devPort);
+          serverResolved = true;
+        } catch (retryErr) {
+          console.log(chalk.red(`  Failed: ${retryErr instanceof Error ? retryErr.message : retryErr}\n`));
+        }
+      } else if (action === 'install-retry') {
+        try {
+          const pm = stack.packageManager ?? 'npm';
+          const cmd = pm === 'yarn' ? 'yarn' : `${pm} install`;
+          const { execSync } = await import('node:child_process');
+          execSync(cmd, { cwd, stdio: 'inherit' });
+          console.log(chalk.green('  Dependencies installed. Retrying dev server...\n'));
+          await devServer.spawn(devCommand, cwd, devPort);
+          serverResolved = true;
+        } catch (retryErr) {
+          console.log(chalk.red(`  Still failing: ${retryErr instanceof Error ? retryErr.message : retryErr}\n`));
+        }
+      } else if (action === 'fix-json-retry') {
+        try {
+          const pkgPath = join(cwd, 'package.json');
+          let content = readFileSync(pkgPath, 'utf-8');
+          content = content.replace(/,(\s*[}\]])/g, '$1');
+          writeFileSync(pkgPath, content, 'utf-8');
+          console.log(chalk.green('  Fixed package.json. Retrying...\n'));
+          const pm = stack.packageManager ?? 'npm';
+          const cmd = pm === 'yarn' ? 'yarn' : `${pm} install`;
+          const { execSync } = await import('node:child_process');
+          execSync(cmd, { cwd, stdio: 'inherit' });
+          await devServer.spawn(devCommand, cwd, devPort);
+          serverResolved = true;
+        } catch (retryErr) {
+          console.log(chalk.red(`  Failed: ${retryErr instanceof Error ? retryErr.message : retryErr}\n`));
+        }
+      } else if (action === 'custom-cmd') {
+        try {
+          const newCmd = await input({ message: 'Enter dev command:', default: devCommand });
+          if (newCmd.trim()) {
+            devCommand = newCmd.trim();
+            console.log(chalk.dim(`  Starting: ${devCommand}\n`));
+            await devServer.spawn(devCommand, cwd, devPort);
+            serverResolved = true;
+          }
+        } catch (retryErr) {
+          console.log(chalk.red(`  Failed: ${retryErr instanceof Error ? retryErr.message : retryErr}\n`));
+        }
+      } else if (action === 'retry') {
+        try {
+          await devServer.spawn(devCommand, cwd, devPort);
+          serverResolved = true;
+        } catch (retryErr) {
+          console.log(chalk.red(`  Still failing: ${retryErr instanceof Error ? retryErr.message : retryErr}\n`));
+        }
+      } else {
+        process.exit(0);
+      }
+    }
   }
 
   // Check if dev server started on a different port
