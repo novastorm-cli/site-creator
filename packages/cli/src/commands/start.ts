@@ -44,6 +44,14 @@ import { ErrorAutoFixer } from '../autofix.js';
 import { NovaChat } from '../chat.js';
 import { handleSettingsCommand } from '../settings.js';
 
+const SELECT_THEME = {
+  icon: { cursor: chalk.whiteBright('❯') },
+  style: {
+    highlight: (text: string) => chalk.whiteBright(text.replace(/\x1b\[\d+m/g, '')),
+  },
+  indexMode: 'hidden' as const,
+};
+
 const PROXY_PORT_OFFSET = 1;
 const MAX_TASK_CONCURRENCY = 3;
 
@@ -464,25 +472,28 @@ export async function startCommand(): Promise<void> {
       if (/EJSONPARSE|JSON/.test(errMsg)) {
         console.log(chalk.yellow('  Cause: package.json contains invalid JSON.\n'));
         choices.push(
-          { name: 'Fix package.json automatically (remove syntax errors)', value: 'fix-json' },
+          { name: chalk.dim('Fix package.json automatically (remove syntax errors)'), value: 'fix-json' },
         );
       }
       if (/ENOENT|not found|Cannot find/.test(errMsg)) {
         console.log(chalk.yellow('  Cause: missing files or modules.\n'));
       }
 
+      if (llmClient) {
+        choices.push(
+          { name: chalk.dim('Describe what to fix (AI will handle it)'), value: 'ai-fix' },
+        );
+      }
       choices.push(
-        { name: 'Retry install', value: 'retry' },
-        { name: 'Enter a different install command', value: 'custom' },
-        { name: 'Skip install and continue', value: 'skip' },
-        { name: 'Exit', value: 'exit' },
+        { name: chalk.dim('Skip install and continue'), value: 'skip' },
+        { name: chalk.dim('Exit'), value: 'exit' },
       );
 
       let resolved = false;
       while (!resolved) {
         let action: string;
         try {
-          action = await select({ message: 'What would you like to do?', choices });
+          action = await select({ message: 'What would you like to do?', choices, theme: SELECT_THEME });
         } catch {
           process.exit(0);
         }
@@ -491,36 +502,81 @@ export async function startCommand(): Promise<void> {
           try {
             const pkgPath = join(cwd, 'package.json');
             let content = readFileSync(pkgPath, 'utf-8');
+
+            // Step 1: Try regex fixes (trailing commas, missing commas)
             content = content.replace(/,(\s*[}\]])/g, '$1');
+            content = content.replace(/"(\s*\n\s*")/g, '",\n  "');
             writeFileSync(pkgPath, content, 'utf-8');
-            console.log(chalk.green('  Fixed package.json. Retrying install...\n'));
+
+            // Step 2: Validate JSON — if still broken, use AI
+            try {
+              JSON.parse(readFileSync(pkgPath, 'utf-8'));
+            } catch {
+              if (llmClient) {
+                console.log(chalk.dim('  Regex fix insufficient, asking AI to fix package.json...\n'));
+                const brokenContent = readFileSync(pkgPath, 'utf-8');
+                const response = await llmClient.chat([
+                  { role: 'system', content: 'You are a JSON fixer. You receive a broken package.json. Output ONLY the corrected valid JSON. No explanation, no markdown fences, just the JSON.' },
+                  { role: 'user', content: `Fix this package.json:\n\n${brokenContent}` },
+                ], { temperature: 0, maxTokens: 4096 });
+
+                // Extract JSON from response (strip markdown fences if present)
+                let fixed = response.trim();
+                const fenceMatch = fixed.match(/```(?:json)?\n([\s\S]*?)```/);
+                if (fenceMatch) fixed = fenceMatch[1].trim();
+
+                // Validate before writing
+                JSON.parse(fixed);
+                writeFileSync(pkgPath, fixed, 'utf-8');
+                console.log(chalk.green('  AI fixed package.json.'));
+              }
+            }
+
+            console.log(chalk.dim('  Retrying install...\n'));
             const { execSync } = await import('node:child_process');
-            execSync(installCmd, { cwd, stdio: 'inherit' });
+            execSync(installCmd, { cwd, stdio: 'pipe' });
             console.log(chalk.green('  Dependencies installed.'));
             resolved = true;
           } catch (fixErr) {
             console.log(chalk.red(`  Fix failed: ${fixErr instanceof Error ? fixErr.message : fixErr}\n`));
           }
-        } else if (action === 'retry') {
+        } else if (action === 'ai-fix') {
           try {
-            const { execSync } = await import('node:child_process');
-            execSync(installCmd, { cwd, stdio: 'inherit' });
-            console.log(chalk.green('  Dependencies installed.'));
-            resolved = true;
-          } catch {
-            console.log(chalk.red('  Install still failing.\n'));
-          }
-        } else if (action === 'custom') {
-          try {
-            const customCmd = await input({ message: 'Enter install command:' });
-            if (customCmd.trim()) {
-              const { execSync } = await import('node:child_process');
-              execSync(customCmd.trim(), { cwd, stdio: 'inherit' });
-              console.log(chalk.green('  Done.'));
-              resolved = true;
+            const userDesc = await input({ message: 'Describe what needs to be fixed:' });
+            if (userDesc.trim() && llmClient) {
+              console.log(chalk.dim('\n  AI is working on it...\n'));
+              const response = await llmClient.chat([
+                { role: 'system', content: `You are a code fixer. You receive an error and a user description of what to fix. Output ONLY the fixed file content with no explanation. Format:\n=== FILE: path/to/file ===\nfull file content\n=== END FILE ===` },
+                { role: 'user', content: `Error:\n${errMsg.slice(0, 800)}\n\nUser says: ${userDesc.trim()}\n\nProject directory: ${cwd}\nFix the issue. Output the corrected file(s).` },
+              ], { temperature: 0, maxTokens: 4096 });
+
+              // Parse and write file blocks
+              const fileBlockRegex = /=== FILE: (.+?) ===\n([\s\S]*?)\n=== END FILE ===/g;
+              let match;
+              let filesWritten = 0;
+              while ((match = fileBlockRegex.exec(response)) !== null) {
+                const filePath = join(cwd, match[1].trim());
+                const fileContent = match[2];
+                const { mkdirSync, writeFileSync: writeSync } = await import('node:fs');
+                const { dirname } = await import('node:path');
+                mkdirSync(dirname(filePath), { recursive: true });
+                writeSync(filePath, fileContent, 'utf-8');
+                console.log(chalk.dim(`  Wrote: ${match[1].trim()}`));
+                filesWritten++;
+              }
+
+              if (filesWritten > 0) {
+                console.log(chalk.green(`\n  AI fixed ${filesWritten} file(s). Retrying install...\n`));
+                const { execSync } = await import('node:child_process');
+                execSync(installCmd, { cwd, stdio: 'pipe' });
+                console.log(chalk.green('  Dependencies installed.'));
+                resolved = true;
+              } else {
+                console.log(chalk.red('  AI could not produce a fix.\n'));
+              }
             }
-          } catch {
-            console.log(chalk.red('  Command failed.\n'));
+          } catch (aiErr) {
+            console.log(chalk.red(`  Failed: ${aiErr instanceof Error ? aiErr.message : aiErr}\n`));
           }
         } else if (action === 'skip') {
           console.log(chalk.dim('  Skipping install.'));
@@ -547,34 +603,37 @@ export async function startCommand(): Promise<void> {
     if (/EADDRINUSE|address already in use/i.test(msg)) {
       console.log(chalk.yellow(`\n  Port ${devPort} is already in use.\n`));
       choices.push(
-        { name: `Kill process on port ${devPort} and retry`, value: 'kill-retry' },
-        { name: 'Use a different port', value: 'change-port' },
+        { name: chalk.dim(`Kill process on port ${devPort} and retry`), value: 'kill-retry' },
+        { name: chalk.dim('Use a different port'), value: 'change-port' },
       );
     }
     if (/Cannot find module|MODULE_NOT_FOUND/i.test(msg)) {
       console.log(chalk.yellow('\n  Missing dependencies.\n'));
       choices.push(
-        { name: 'Run npm install and retry', value: 'install-retry' },
+        { name: chalk.dim('Run npm install and retry'), value: 'install-retry' },
       );
     }
     if (/EJSONPARSE|JSON/.test(msg)) {
       console.log(chalk.yellow('\n  package.json has invalid JSON.\n'));
       choices.push(
-        { name: 'Fix package.json and retry', value: 'fix-json-retry' },
+        { name: chalk.dim('Fix package.json and retry'), value: 'fix-json-retry' },
       );
     }
 
+    if (llmClient) {
+      choices.push(
+        { name: chalk.dim('Describe what to fix (AI will handle it)'), value: 'ai-fix' },
+      );
+    }
     choices.push(
-      { name: 'Enter a different dev command', value: 'custom-cmd' },
-      { name: 'Retry with same command', value: 'retry' },
-      { name: 'Exit', value: 'exit' },
+      { name: chalk.dim('Exit'), value: 'exit' },
     );
 
     let serverResolved = false;
     while (!serverResolved) {
       let action: string;
       try {
-        action = await select({ message: 'What would you like to do?', choices });
+        action = await select({ message: 'What would you like to do?', choices, theme: SELECT_THEME });
       } catch {
         process.exit(0);
       }
@@ -617,35 +676,71 @@ export async function startCommand(): Promise<void> {
           const pkgPath = join(cwd, 'package.json');
           let content = readFileSync(pkgPath, 'utf-8');
           content = content.replace(/,(\s*[}\]])/g, '$1');
+          content = content.replace(/"(\s*\n\s*")/g, '",\n  "');
           writeFileSync(pkgPath, content, 'utf-8');
-          console.log(chalk.green('  Fixed package.json. Retrying...\n'));
+
+          try {
+            JSON.parse(readFileSync(pkgPath, 'utf-8'));
+          } catch {
+            if (llmClient) {
+              console.log(chalk.dim('  Regex fix insufficient, asking AI to fix package.json...\n'));
+              const brokenContent = readFileSync(pkgPath, 'utf-8');
+              const resp = await llmClient.chat([
+                { role: 'system', content: 'You are a JSON fixer. You receive a broken package.json. Output ONLY the corrected valid JSON. No explanation, no markdown fences, just the JSON.' },
+                { role: 'user', content: `Fix this package.json:\n\n${brokenContent}` },
+              ], { temperature: 0, maxTokens: 4096 });
+              let fixed = resp.trim();
+              const fence = fixed.match(/```(?:json)?\n([\s\S]*?)```/);
+              if (fence) fixed = fence[1].trim();
+              JSON.parse(fixed);
+              writeFileSync(pkgPath, fixed, 'utf-8');
+              console.log(chalk.green('  AI fixed package.json.'));
+            }
+          }
+
+          console.log(chalk.dim('  Retrying...\n'));
           const pm = stack.packageManager ?? 'npm';
           const cmd = pm === 'yarn' ? 'yarn' : `${pm} install`;
           const { execSync } = await import('node:child_process');
-          execSync(cmd, { cwd, stdio: 'inherit' });
+          execSync(cmd, { cwd, stdio: 'pipe' });
           await devServer.spawn(devCommand, cwd, devPort);
           serverResolved = true;
         } catch (retryErr) {
           console.log(chalk.red(`  Failed: ${retryErr instanceof Error ? retryErr.message : retryErr}\n`));
         }
-      } else if (action === 'custom-cmd') {
+      } else if (action === 'ai-fix') {
         try {
-          const newCmd = await input({ message: 'Enter dev command:', default: devCommand });
-          if (newCmd.trim()) {
-            devCommand = newCmd.trim();
-            console.log(chalk.dim(`  Starting: ${devCommand}\n`));
-            await devServer.spawn(devCommand, cwd, devPort);
-            serverResolved = true;
+          const userDesc = await input({ message: 'Describe what needs to be fixed:' });
+          if (userDesc.trim() && llmClient) {
+            console.log(chalk.dim('\n  AI is working on it...\n'));
+            const response = await llmClient.chat([
+              { role: 'system', content: `You are a code fixer. You receive an error and a user description of what to fix. Output ONLY the fixed file content with no explanation. Format:\n=== FILE: path/to/file ===\nfull file content\n=== END FILE ===` },
+              { role: 'user', content: `Error:\n${msg.slice(0, 800)}\n\nUser says: ${userDesc.trim()}\n\nProject directory: ${cwd}\nFix the issue. Output the corrected file(s).` },
+            ], { temperature: 0, maxTokens: 4096 });
+
+            const fileBlockRegex = /=== FILE: (.+?) ===\n([\s\S]*?)\n=== END FILE ===/g;
+            let fMatch;
+            let filesWritten = 0;
+            while ((fMatch = fileBlockRegex.exec(response)) !== null) {
+              const filePath = join(cwd, fMatch[1].trim());
+              const { mkdirSync, writeFileSync: writeSync } = await import('node:fs');
+              const { dirname } = await import('node:path');
+              mkdirSync(dirname(filePath), { recursive: true });
+              writeSync(filePath, fMatch[2], 'utf-8');
+              console.log(chalk.dim(`  Wrote: ${fMatch[1].trim()}`));
+              filesWritten++;
+            }
+
+            if (filesWritten > 0) {
+              console.log(chalk.green(`\n  AI fixed ${filesWritten} file(s). Retrying dev server...\n`));
+              await devServer.spawn(devCommand, cwd, devPort);
+              serverResolved = true;
+            } else {
+              console.log(chalk.red('  AI could not produce a fix.\n'));
+            }
           }
         } catch (retryErr) {
           console.log(chalk.red(`  Failed: ${retryErr instanceof Error ? retryErr.message : retryErr}\n`));
-        }
-      } else if (action === 'retry') {
-        try {
-          await devServer.spawn(devCommand, cwd, devPort);
-          serverResolved = true;
-        } catch (retryErr) {
-          console.log(chalk.red(`  Still failing: ${retryErr instanceof Error ? retryErr.message : retryErr}\n`));
         }
       } else {
         process.exit(0);
