@@ -84,7 +84,7 @@ function isPortInUse(port: number): Promise<boolean> {
     const server = net.createServer();
     server.once('error', () => resolve(true));
     server.once('listening', () => { server.close(); resolve(false); });
-    server.listen(port, '127.0.0.1');
+    server.listen(port);
   });
 }
 function findOverlayScript(): string {
@@ -437,17 +437,47 @@ export async function startCommand(): Promise<void> {
   const proxyPortBusy = await isPortInUse(proxyPort);
 
   if (devPortBusy || proxyPortBusy) {
-    spinner.fail('Port conflict detected:');
-    if (devPortBusy) {
-      console.log(chalk.red(`  ✗ Port ${devPort} is already in use (dev server)`));
-      console.log(chalk.gray(`    Kill the process: ${chalk.cyan(`lsof -ti :${devPort} | xargs kill`)}`));
+    spinner.fail('Port conflict detected');
+    const busyPorts = [];
+    if (devPortBusy) busyPorts.push(devPort);
+    if (proxyPortBusy) busyPorts.push(proxyPort);
+    console.log(chalk.red(`  Port(s) in use: ${busyPorts.join(', ')}`));
+
+    const portChoices = [
+      { name: chalk.dim(`Kill processes on port(s) ${busyPorts.join(', ')} and continue`), value: 'kill' },
+      { name: chalk.dim('Use a different port'), value: 'change' },
+      { name: chalk.dim('Exit'), value: 'exit' },
+    ];
+
+    let portResolved = false;
+    while (!portResolved) {
+      let portAction: string;
+      try {
+        portAction = await select({ message: 'What would you like to do?', choices: portChoices, theme: SELECT_THEME });
+      } catch { process.exit(0); }
+
+      if (portAction === 'kill') {
+        try {
+          const { execSync } = await import('node:child_process');
+          for (const p of busyPorts) {
+            execSync(`lsof -ti :${p} | xargs kill -9`, { stdio: 'ignore' });
+          }
+          console.log(chalk.green(`  Killed processes. Continuing...\n`));
+          portResolved = true;
+        } catch {
+          console.log(chalk.red('  Failed to kill processes.\n'));
+        }
+      } else if (portAction === 'change') {
+        try {
+          const newPortStr = await input({ message: 'Enter dev server port:', default: String(devPort + 10) });
+          devPort = parseInt(newPortStr, 10);
+          proxyPort = devPort + PROXY_PORT_OFFSET;
+          portResolved = true;
+        } catch { process.exit(0); }
+      } else {
+        process.exit(0);
+      }
     }
-    if (proxyPortBusy) {
-      console.log(chalk.red(`  ✗ Port ${proxyPort} is already in use (proxy)`));
-      console.log(chalk.gray(`    Kill the process: ${chalk.cyan(`lsof -ti :${proxyPort} | xargs kill`)}`));
-    }
-    console.log(chalk.gray(`\n  Or change the port in nova.toml: ${chalk.cyan('port = <number>')}\n`));
-    process.exit(1);
   }
   spinner.succeed('Ports available');
 
