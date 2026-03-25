@@ -12,9 +12,17 @@ export class WebSocketServer implements IWebSocketServer {
   private secretsSubmitHandlers: Array<(secrets: Record<string, string>) => void> = [];
 
   start(httpServer: http.Server): void {
-    this.wss = new WsServer({
-      server: httpServer,
-      path: '/nova-ws',
+    this.wss = new WsServer({ noServer: true });
+
+    // Manually handle upgrade only for /nova-ws — let other WS paths
+    // (e.g. Next.js HMR /_next/webpack-hmr) pass through to the proxy
+    httpServer.on('upgrade', (req, socket, head) => {
+      if (req.url === '/nova-ws') {
+        this.wss!.handleUpgrade(req, socket, head, (ws) => {
+          this.wss!.emit('connection', ws, req);
+        });
+      }
+      // Non-nova-ws upgrades are handled by ProxyServer's upgrade handler
     });
 
     this.wss.on('connection', (ws: WebSocket) => {
