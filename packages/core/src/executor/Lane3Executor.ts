@@ -397,48 +397,83 @@ export class Lane3Executor {
    * Fuzzy diff apply — find removed lines in the file and replace with added lines.
    * Ignores context lines (doesn't require exact line numbers).
    */
+  /**
+   * Fuzzy diff apply: process each hunk separately (not all removals merged).
+   * Validates result has balanced brackets/tags before returning.
+   */
   private fuzzyApplyDiff(content: string, diff: string): string {
-    const lines = content.split('\n');
     const diffLines = diff.split('\n');
 
-    // Extract hunks: removed lines (- prefix) and added lines (+ prefix)
-    const removals: string[] = [];
-    const additions: string[] = [];
+    // Parse into separate hunks (each starts with @@)
+    const hunks: Array<{ removals: string[]; additions: string[] }> = [];
+    let current: { removals: string[]; additions: string[] } | null = null;
 
     for (const dl of diffLines) {
-      if (dl.startsWith('-') && !dl.startsWith('---')) {
-        removals.push(dl.slice(1)); // Remove the - prefix
-      } else if (dl.startsWith('+') && !dl.startsWith('+++')) {
-        additions.push(dl.slice(1)); // Remove the + prefix
+      if (dl.startsWith('@@')) {
+        if (current) hunks.push(current);
+        current = { removals: [], additions: [] };
+      } else if (current) {
+        if (dl.startsWith('-') && !dl.startsWith('---')) {
+          current.removals.push(dl.slice(1));
+        } else if (dl.startsWith('+') && !dl.startsWith('+++')) {
+          current.additions.push(dl.slice(1));
+        }
+      }
+    }
+    if (current && (current.removals.length || current.additions.length)) hunks.push(current);
+
+    if (hunks.length === 0) return content;
+
+    let lines = content.split('\n');
+
+    // Apply each hunk separately
+    for (const hunk of hunks) {
+      if (hunk.removals.length > 0) {
+        const firstRemoval = hunk.removals[0].trim();
+        const idx = lines.findIndex(l => l.trim() === firstRemoval);
+
+        if (idx !== -1) {
+          let removeCount = 0;
+          for (let i = 0; i < hunk.removals.length && (idx + removeCount) < lines.length; i++) {
+            if (lines[idx + removeCount].trim() === hunk.removals[i].trim()) {
+              removeCount++;
+            }
+          }
+          lines.splice(idx, removeCount, ...hunk.additions);
+        }
+      } else if (hunk.additions.length > 0) {
+        // Pure additions — append at end
+        lines = [...lines, ...hunk.additions];
       }
     }
 
-    if (removals.length === 0 && additions.length === 0) return content;
+    const result = lines.join('\n');
 
-    // Find the first removal line in the file
-    let result = content;
-    if (removals.length > 0) {
-      const firstRemoval = removals[0].trim();
-      const idx = lines.findIndex(l => l.trim() === firstRemoval);
-
-      if (idx !== -1) {
-        // Remove all matched lines and insert additions at that position
-        const newLines = [...lines];
-        let removeCount = 0;
-        for (let i = 0; i < removals.length && (idx + removeCount) < newLines.length; i++) {
-          if (newLines[idx + removeCount].trim() === removals[i].trim()) {
-            removeCount++;
-          }
-        }
-        newLines.splice(idx, removeCount, ...additions);
-        result = newLines.join('\n');
-      }
-    } else if (additions.length > 0) {
-      // Only additions — append at end
-      result = content + '\n' + additions.join('\n');
+    // Validate: check balanced brackets/parens
+    if (!this.hasBalancedBrackets(result)) {
+      throw new Error('Fuzzy apply produced unbalanced brackets — aborting');
     }
 
     return result;
+  }
+
+  /** Quick check that curly braces, parens, and brackets are roughly balanced. */
+  private hasBalancedBrackets(content: string): boolean {
+    let curly = 0;
+    let paren = 0;
+    let square = 0;
+
+    for (const ch of content) {
+      if (ch === '{') curly++;
+      else if (ch === '}') curly--;
+      else if (ch === '(') paren++;
+      else if (ch === ')') paren--;
+      else if (ch === '[') square++;
+      else if (ch === ']') square--;
+    }
+
+    // Allow small imbalance (template literals, etc.) but catch gross mismatches
+    return Math.abs(curly) <= 1 && Math.abs(paren) <= 1 && Math.abs(square) <= 1;
   }
 
   /**
