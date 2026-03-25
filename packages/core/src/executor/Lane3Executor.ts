@@ -524,11 +524,18 @@ export class Lane3Executor {
           const updatedContent = await readFile(absPath, 'utf-8');
           result.push({ path: block.path, content: updatedContent });
         } catch (err) {
-          // Diff failed — try fuzzy apply (ignore context lines, just apply +/- changes)
           console.log(`[Nova] Warning: diff apply failed for ${block.path}`);
           console.log(`[Nova]   Reason: ${err instanceof Error ? err.message : String(err)}`);
-          console.log(`[Nova]   Trying fuzzy apply...`);
 
+          // For JSX/TSX files, skip fuzzy apply — too risky, go straight to full file retry
+          const isJsx = /\.[tj]sx$/.test(block.path);
+          if (isJsx) {
+            console.log(`[Nova]   JSX file — skipping fuzzy, marking for full file retry`);
+            failedDiffPaths.push(block.path);
+            continue;
+          }
+
+          console.log(`[Nova]   Trying fuzzy apply...`);
           try {
             const existingContent = await readFile(absPath, 'utf-8');
             const patched = this.fuzzyApplyDiff(existingContent, block.diff);

@@ -317,6 +317,14 @@ Error: ${errorOutput.slice(0, 300)}`;
     const result = await executor.execute(task, this.projectMap);
     setTimeout(() => this.autofixTaskIds.delete(task.id), 5000);
 
+    // Clear Next.js/Turbopack cache after fix to avoid stale compilation errors
+    try {
+      const { rmSync } = await import('node:fs');
+      const { join } = await import('node:path');
+      const nextCache = join(this.projectPath, '.next', 'cache');
+      rmSync(nextCache, { recursive: true, force: true });
+    } catch { /* cache dir may not exist */ }
+
     if (result.success) {
       console.log(chalk.green('[Nova] Compilation error fixed automatically'));
       this.eventBus.emit({
