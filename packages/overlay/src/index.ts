@@ -769,31 +769,40 @@ IMPORTANT: Only modify the minimum code needed. Do not restructure other parts o
           const phaseLabel = event.data.phase === 'reasoning' ? 'Thinking...' : 'Generating code...';
           taskPanel.setStreamingText(event.data.taskId, phaseLabel, event.data.phase);
         }
-        // Activity log: accumulate reasoning, detect file writes in code
+        // Activity log: accumulate all LLM output, detect file/diff blocks in both phases
+        codeBuffer += event.data.text;
+
         if (event.data.phase === 'reasoning') {
           reasoningBuffer += event.data.text;
-          if (lastReasoningEntry) {
-            activityLog.updateLastEntry(reasoningBuffer.slice(-200));
-          } else {
-            lastReasoningEntry = activityLog.addEntry(event.data.text, 'thinking', false, ts);
+          // Only show reasoning text that doesn't contain file/diff blocks
+          if (!reasoningBuffer.includes('=== FILE:') && !reasoningBuffer.includes('=== DIFF:')) {
+            if (lastReasoningEntry) {
+              activityLog.updateLastEntry(reasoningBuffer.slice(-200));
+            } else {
+              lastReasoningEntry = activityLog.addEntry(event.data.text, 'thinking', false, ts);
+            }
           }
         } else {
           if (reasoningBuffer) {
             lastReasoningEntry = null;
             reasoningBuffer = '';
           }
-          // Accumulate code blocks and show as collapsible entries
-          codeBuffer += event.data.text;
+        }
 
-          // Check for completed FILE or DIFF blocks
+        // Check for completed FILE or DIFF blocks (in both reasoning and code phases)
+        {
           const blockRegex = /=== (?:FILE|DIFF): (.+?) ===\n([\s\S]*?)(?:=== END (?:FILE|DIFF) ===)/g;
           let blockMatch;
           while ((blockMatch = blockRegex.exec(codeBuffer)) !== null) {
             const filePath = blockMatch[1].trim();
             const content = blockMatch[2].trim();
-            const isDiff = codeBuffer.slice(blockMatch.index, blockMatch.index + 8).includes('DIFF');
-            const label = isDiff ? `Modified: ${filePath}` : `Created: ${filePath}`;
             activityLog.addDiffEntry(filePath, content, 'code', ts);
+            // Clear reasoning entry if it was showing partial block text
+            if (lastReasoningEntry) {
+              lastReasoningEntry.remove();
+              lastReasoningEntry = null;
+              reasoningBuffer = '';
+            }
           }
           // Keep only unmatched tail in buffer
           const lastEnd = codeBuffer.lastIndexOf('=== END');
