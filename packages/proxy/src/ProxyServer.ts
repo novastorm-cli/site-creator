@@ -35,7 +35,7 @@ export class ProxyServer implements IProxyServer {
     }
 
     this.proxy = httpProxy.createProxyServer({
-      target: `http://127.0.0.1:${targetPort}`,
+      target: `http://localhost:${targetPort}`,
       selfHandleResponse: true,
     });
 

@@ -837,7 +837,7 @@ export async function startCommand(): Promise<void> {
 
   // ── 7. Open browser ────────────────────────────────────────────────
   console.log(chalk.dim('Opening browser...'));
-  const openUrl = `http://127.0.0.1:${proxyPort}`;
+  const openUrl = `http://localhost:${proxyPort}`;
   if (process.platform === 'darwin') {
     // Try Chrome first, fall back to default browser
     exec(`open -a "Google Chrome" "${openUrl}" 2>/dev/null || open -a "Chromium" "${openUrl}" 2>/dev/null || open "${openUrl}"`);
@@ -1116,7 +1116,7 @@ export async function startCommand(): Promise<void> {
       try {
         const http = await import('node:http');
         const res = await new Promise<{ statusCode?: number }>((resolve) => {
-          const req = http.get(`http://127.0.0.1:${devPort}`, resolve);
+          const req = http.get(`http://localhost:${devPort}`, resolve);
           req.on('error', () => resolve({ statusCode: 0 }));
           req.setTimeout(5000, () => { req.destroy(); resolve({ statusCode: 0 }); });
         });
@@ -1328,7 +1328,7 @@ export async function startCommand(): Promise<void> {
       }
 
       case 'map': {
-        const url = `http://127.0.0.1:${proxyPort}/nova-project-map`;
+        const url = `http://localhost:${proxyPort}/nova-project-map`;
         chat!.log(chalk.cyan(`Opening project map: ${url}`));
         const { exec: execCmd } = await import('node:child_process');
         if (process.platform === 'darwin') {
