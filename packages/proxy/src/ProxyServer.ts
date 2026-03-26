@@ -6,7 +6,9 @@ import fs from 'node:fs';
 import httpProxy from 'http-proxy';
 import type { IProxyServer } from '@novastorm-ai/core';
 
-const SCRIPT_TAG = '<script defer src="/nova-overlay.js"></script>';
+// Injected AFTER </html> to avoid React hydration mismatch.
+// Browsers still parse and execute it, but React never sees it in the DOM tree.
+const SCRIPT_TAG = '<script src="/nova-overlay.js" async></script>';
 
 export class ProxyServer implements IProxyServer {
   private server: http.Server | null = null;
@@ -86,18 +88,16 @@ export class ProxyServer implements IProxyServer {
       stream.on('end', () => {
         let body = Buffer.concat(chunks).toString('utf-8');
 
-        if (body.includes('</head>')) {
-          body = body.replace('</head>', `${SCRIPT_TAG}</head>`);
-        } else if (body.includes('</body>')) {
-          body = body.replace('</body>', `${SCRIPT_TAG}</body>`);
-        } else {
-          body += SCRIPT_TAG;
-        }
+        // Append AFTER </html> — outside React's hydration scope
+        body += SCRIPT_TAG;
 
         // Remove content-length and content-encoding since we modified + decompressed
         delete headers['content-length'];
         delete headers['content-encoding'];
         delete headers['transfer-encoding'];
+        // Prevent browser caching of HTML (ensures fresh page after code changes)
+        headers['cache-control'] = 'no-cache, no-store, must-revalidate';
+        headers['pragma'] = 'no-cache';
 
         for (const [key, value] of Object.entries(headers)) {
           if (value !== undefined) {
